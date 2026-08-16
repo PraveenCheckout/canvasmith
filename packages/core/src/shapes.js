@@ -1,0 +1,59 @@
+/* Vector layers: shapes and text. Fabric is injected; every creator returns the new object with
+   the library's layer metadata (id/role/name) already set, so hosts can list and manage layers
+   without knowing Fabric internals. */
+
+let _uid = 0;
+export const uid = () => 'o' + (Date.now().toString(36)) + (_uid++).toString(36);
+
+export function starPoints(cx, cy, outer, inner, n) {
+  const pts = [];
+  for (let i = 0; i < n * 2; i++) {
+    const r = i % 2 ? inner : outer;
+    const a = (Math.PI / n) * i - Math.PI / 2;
+    pts.push({ x: cx + r * Math.cos(a), y: cy + r * Math.sin(a) });
+  }
+  return pts;
+}
+
+const BASE = { originX: 'left', originY: 'top' };
+
+export function makeShape(fabric, tool, pt, o = {}) {
+  const size = o.size || 160;
+  const fill = o.fill || '#d4ff45';
+  const stroke = o.stroke || null;
+  const strokeWidth = o.strokeWidth || 0;
+  const common = { ...BASE, left: pt.x - size / 2, top: pt.y - size / 2, fill, stroke, strokeWidth };
+  let obj = null;
+  if (tool === 'rect') obj = new fabric.Rect({ ...common, width: size, height: size, rx: o.rx || 0, ry: o.rx || 0 });
+  else if (tool === 'ellipse') obj = new fabric.Ellipse({ ...common, rx: size / 2, ry: size / 2 });
+  else if (tool === 'triangle') obj = new fabric.Triangle({ ...common, width: size, height: size });
+  else if (tool === 'line') obj = new fabric.Line([pt.x - size / 2, pt.y, pt.x + size / 2, pt.y], { stroke: stroke || fill, strokeWidth: strokeWidth || 4 });
+  else if (tool === 'polygon') obj = new fabric.Polygon(starPoints(pt.x, pt.y, size / 2, size / 2, 6).filter((_, i) => i % 2 === 0), { fill, stroke, strokeWidth });
+  else if (tool === 'star') obj = new fabric.Polygon(starPoints(pt.x, pt.y, size / 2, size / 4, 5), { fill, stroke, strokeWidth });
+  if (!obj) return null;
+  obj.set({ id: uid(), role: 'shape', name: tool[0].toUpperCase() + tool.slice(1) });
+  return obj;
+}
+
+export function makeText(fabric, pt, o = {}) {
+  const t = new fabric.IText(o.text || 'Double-click to edit', {
+    ...BASE, left: pt.x, top: pt.y,
+    fontFamily: o.fontFamily || 'system-ui, sans-serif',
+    fontSize: o.fontSize || 48,
+    fontWeight: o.fontWeight || 700,
+    fill: o.fill || '#111111',
+  });
+  t.set({ id: uid(), role: 'text', name: 'Text' });
+  return t;
+}
+
+/* Human name for a layer, mirroring what a layers panel wants to show. */
+export function layerLabel(o) {
+  if (o.renamed && o.name) return o.name;
+  if (o.role === 'paint') return o.name || 'Paint';
+  if (o.role === 'bg') return 'Background';
+  if (o.type === 'i-text' || o.type === 'text' || o.type === 'textbox') return (o.text || 'Text').slice(0, 24);
+  if (o.type === 'image') return o.name || 'Image';
+  if (o.type === 'group') return (o._objects ? o._objects.length : '?') + ' layers';
+  return o.name || o.type || 'Layer';
+}

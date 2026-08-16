@@ -1,0 +1,14 @@
+<!doctype html><meta charset="utf-8"><title>Canvasmith bookmarklet builder</title>
+<body style="font:14px system-ui;max-width:640px;margin:40px auto;line-height:1.6">
+<h2>Build your "Edit in Canvasmith" bookmarklet</h2>
+<p>1. Where is your editor hosted?</p>
+<input id="u" style="width:100%;padding:8px" value="http://localhost:8901/apps/demo/index.html">
+<p>2. Drag this to your bookmarks bar:</p>
+<p><a id="mark" href="#" style="display:inline-block;padding:10px 16px;background:#d4ff45;border-radius:99px;color:#111;text-decoration:none;font-weight:700">🖼 Edit in Canvasmith</a></p>
+<script>
+fetch('canvasmith-bookmarklet.js').then(r=>r.text()).then(src=>{
+  const build=()=>{ const code='window.CANVASMITH_URL='+JSON.stringify(document.getElementById('u').value)+';'+src;
+    document.getElementById('mark').href='javascript:'+encodeURIComponent(code); };
+  document.getElementById('u').addEventListener('input',build); build();
+});
+</script>

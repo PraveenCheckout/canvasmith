@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Edit in Canvasmith",
+  "version": "0.1.0",
+  "description": "Right-click any image on any site and open it in your Canvasmith editor.",
+  "permissions": ["contextMenus", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": { "service_worker": "background.js" },
+  "options_ui": { "page": "options.html" },
+  "action": { "default_title": "Edit in Canvasmith" }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "@canvasmith/react",
+  "version": "0.1.0",
+  "description": "Ready-made React UI (and framework-free mount()) for @canvasmith/core.",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "exports": { ".": "./dist/index.js", "./standalone": "./dist/standalone.js" },
+  "files": ["dist", "src"],
+  "peerDependencies": { "react": ">=18", "react-dom": ">=18", "fabric": "^5.3.0" },
+  "dependencies": { "@canvasmith/core": "0.1.0" },
+  "license": "MIT"
+}

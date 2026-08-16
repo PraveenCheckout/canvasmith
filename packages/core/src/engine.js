@@ -1,0 +1,274 @@
+/* PaintEngine — the raster heart of the editor.
+   A single offscreen canvas (artboard resolution) is wrapped as a Fabric image layer; every pixel
+   tool draws onto it in scene coordinates, so zoom/pan come free from Fabric's viewport transform.
+
+   Tools implemented here: brush, pencil, eraser, dodge, burn, sponge, red-eye, clone, heal,
+   bucket-style fill, linear gradient, eyedropper sampling. Selections clip strokes via setClip().
+
+   Headless: `fabric` is injected — nothing here reads globals. */
+
+import { hexRgb, rgba, toHex } from './color.js';
+
+export const PAINT_TOOLS = ['brush', 'pencil', 'eraser', 'clone', 'heal', 'dodge', 'burn', 'sponge', 'redeye'];
+
+export class PaintEngine {
+  constructor(fabric, fc, W, H) {
+    this.fabric = fabric; this.fc = fc; this.W = W; this.H = H;
+    this.cv = document.createElement('canvas'); this.cv.width = W; this.cv.height = H;
+    this.ctx = this.cv.getContext('2d');
+    this.layer = null; this._clip = null; this._flat = null; this._src = null; this._off = null; this._last = null;
+    this._lastStrokeEnd = null; this._curPt = null; this._newSourceSet = false;
+  }
+
+  /* The engine's Fabric layer, created on first use and re-created if the host deleted it. */
+  ensure() {
+    if (this.layer && this.fc.getObjects().includes(this.layer)) return this.layer;
+    this.cv = document.createElement('canvas');
+    this.cv.width = this.W;
+    this.cv.height = this.H;
+    this.ctx = this.cv.getContext('2d');
+    const img = new this.fabric.Image(this.cv, { left: 0, top: 0, originX: 'left', originY: 'top', selectable: true, evented: true });
+    img.set({
+      id: 'o' + Math.random().toString(36).slice(2, 7),
+      role: 'paint',
+      name: 'Paint ' + (this.fc.getObjects().filter(o => o.role === 'paint').length + 1),
+    });
+    this.layer = img; this.fc.add(img); return img;
+  }
+
+  commit() { if (this.layer) this.layer.dirty = true; this.fc.renderAll(); }
+
+  /* Selection clipping: strokes land only inside `path2d` (evenodd supports inverted selections). */
+  setClip(path2d, rule) { this._clip = path2d || null; this._clipRule = rule || 'nonzero'; }
+
+  /* Flatten the whole scene at artboard resolution — clone/heal sample from this, and the
+     eyedropper reads it, so both see COMPOSITED pixels, not just the paint layer. */
+  captureFlat() {
+    const fc = this.fc; const vpt = fc.viewportTransform.slice(); const w = fc.getWidth(), h = fc.getHeight();
+    fc.setViewportTransform([1, 0, 0, 1, 0, 0]); fc.setDimensions({ width: this.W, height: this.H });
+    this._flat = fc.toCanvasElement(1, { left: 0, top: 0, width: this.W, height: this.H });
+    fc.setDimensions({ width: w, height: h }); fc.setViewportTransform(vpt); fc.renderAll();
+  }
+
+  _softStamp(x, y, o, color, comp, alphaMul) {
+    const ctx = this.ctx, r = Math.max(1, o.size / 2), hard = o.hardness != null ? o.hardness : 0.7;
+    ctx.save(); if (this._clip) ctx.clip(this._clip, this._clipRule || 'nonzero');
+    ctx.globalCompositeOperation = comp || 'source-over';
+    ctx.globalAlpha = (o.opacity != null ? o.opacity : 1) * (alphaMul || 1);
+    const g = ctx.createRadialGradient(x, y, r * hard, x, y, r);
+    g.addColorStop(0, rgba(color, 1)); g.addColorStop(1, rgba(color, 0));
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill();
+    ctx.restore();
+  }
+
+  _hardStamp(x, y, o, color) {
+    const ctx = this.ctx, r = Math.max(0.5, o.size / 2);
+    ctx.save(); if (this._clip) ctx.clip(this._clip, this._clipRule || 'nonzero');
+    ctx.globalAlpha = o.opacity != null ? o.opacity : 1; ctx.fillStyle = color;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 7); ctx.fill(); ctx.restore();
+  }
+
+  /* Clone/heal: copy pixels from the flattened scene at a source offset; heal adds a blur pass so
+     the patch melts into its surroundings. Soft edges come from a destination-in radial mask. */
+  _cloneStamp(x, y, o, blur) {
+    if (!this._flat || !this._off) return;
+    const ctx = this.ctx, r = Math.max(1, o.size / 2);
+    const hard = o.hardness != null ? o.hardness : 0.7;
+    const tempCanvas = document.createElement('canvas');
+    const size = Math.ceil(r * 2);
+    tempCanvas.width = size;
+    tempCanvas.height = size;
+    const tempCtx = tempCanvas.getContext('2d');
+    const sx = x - this._off.x - r;
+    const sy = y - this._off.y - r;
+    try { tempCtx.drawImage(this._flat, sx, sy, r * 2, r * 2, 0, 0, r * 2, r * 2); } catch (e) { /* out of bounds */ }
+    tempCtx.globalCompositeOperation = 'destination-in';
+    const g = tempCtx.createRadialGradient(r, r, r * hard, r, r, r);
+    g.addColorStop(0, 'rgba(0,0,0,1)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    tempCtx.fillStyle = g;
+    tempCtx.beginPath();
+    tempCtx.arc(r, r, r, 0, 2 * Math.PI);
+    tempCtx.fill();
+    ctx.save();
+    if (this._clip) ctx.clip(this._clip, this._clipRule || 'nonzero');
+    ctx.globalAlpha = o.opacity != null ? o.opacity : 1;
+    if (blur) ctx.filter = 'blur(' + Math.max(2, r * 0.35) + 'px)';
+    ctx.drawImage(tempCanvas, x - r, y - r);
+    ctx.restore();
+  }
+
+  /* Red-eye: detect red-dominant pixels under the brush and pull them to the G/B average. */
+  _redEyeCorrection(x, y, o) {
+    const ctx = this.ctx;
+    const r = Math.max(1, o.size / 2);
+    const left = Math.max(0, Math.floor(x - r));
+    const top = Math.max(0, Math.floor(y - r));
+    const width = Math.min(this.W - left, Math.ceil(r * 2));
+    const height = Math.min(this.H - top, Math.ceil(r * 2));
+    if (width <= 0 || height <= 0) return;
+    let imgData;
+    try { imgData = ctx.getImageData(left, top, width, height); } catch (e) { return; }
+    const data = imgData.data;
+    const brushOpacity = o.opacity != null ? o.opacity : 1;
+    let changed = false;
+    for (let py = 0; py < height; py++) {
+      for (let px = 0; px < width; px++) {
+        const idx = (py * width + px) << 2;
+        const rVal = data[idx], gVal = data[idx + 1], bVal = data[idx + 2], aVal = data[idx + 3];
+        if (aVal > 0) {
+          const dx = (left + px) - x, dy = (top + py) - y;
+          const dist = Math.hypot(dx, dy);
+          if (dist <= r && rVal > 80 && rVal > gVal * 1.3 && rVal > bVal * 1.3) {
+            const falloff = 1 - (dist / r);
+            const factor = Math.max(0, Math.min(1, falloff)) * brushOpacity;
+            const targetRed = (gVal + bVal) / 2;
+            data[idx] = Math.round(rVal * (1 - factor) + targetRed * factor);
+            data[idx + 1] = Math.round(gVal * (1 - 0.25 * factor));
+            data[idx + 2] = Math.round(bVal * (1 - 0.25 * factor));
+            changed = true;
+          }
+        }
+      }
+    }
+    if (changed) {
+      if (this._clip) {
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = width;
+        tempCanvas.height = height;
+        tempCanvas.getContext('2d').putImageData(imgData, 0, 0);
+        ctx.save();
+        ctx.clip(this._clip, this._clipRule || 'nonzero');
+        ctx.drawImage(tempCanvas, left, top);
+        ctx.restore();
+      } else {
+        ctx.putImageData(imgData, left, top);
+      }
+    }
+  }
+
+  /* Interpolate dabs between points so fast strokes stay continuous. */
+  _line(tool, from, to, o) {
+    const dx = to.x - from.x, dy = to.y - from.y, dist = Math.hypot(dx, dy);
+    const step = Math.max(1, (o.size || 20) * 0.18);
+    const n = Math.max(1, Math.floor(dist / step));
+    for (let i = 1; i <= n; i++) { const x = from.x + dx * (i / n), y = from.y + dy * (i / n); this._dab(tool, x, y, o); }
+  }
+
+  _dab(tool, x, y, o) {
+    switch (tool) {
+      case 'brush': this._softStamp(x, y, o, o.color, 'source-over'); break;
+      case 'pencil': this._hardStamp(x, y, o, o.color); break;
+      case 'eraser': this._softStamp(x, y, o, '#000000', 'destination-out'); break;
+      case 'dodge': this._softStamp(x, y, o, '#ffffff', 'color-dodge', 0.25); break;
+      case 'burn': this._softStamp(x, y, o, '#000000', 'color-burn', 0.25); break;
+      case 'sponge': {
+        const spongeColor = (o.spongeMode === 'saturate') ? '#ff0000' : '#808080';
+        this._softStamp(x, y, o, spongeColor, 'saturation', 0.7);
+        break;
+      }
+      case 'redeye': this._redEyeCorrection(x, y, o); break;
+      case 'clone': this._cloneStamp(x, y, o, false); break;
+      case 'heal': this._cloneStamp(x, y, o, true); break;
+      default: this._softStamp(x, y, o, o.color, 'source-over');
+    }
+  }
+
+  /* Pointer protocol: down/move/up in scene coordinates.
+     clone/heal: alt-click sets the source ('src-set' is returned so the UI can show it);
+     shift-click joins strokes with a straight line, Photoshop-style. */
+  down(tool, pt, o) {
+    this.ensure();
+    this._curPt = pt;
+    if (tool === 'clone' || tool === 'heal') {
+      if (o.alt || !this._src) {
+        this._src = { x: pt.x, y: pt.y };
+        this._newSourceSet = true;
+        return 'src-set';
+      }
+      if (o.aligned === false) {
+        this._off = { x: pt.x - this._src.x, y: pt.y - this._src.y };
+      } else if (!this._off || this._newSourceSet) {
+        this._off = { x: pt.x - this._src.x, y: pt.y - this._src.y };
+        this._newSourceSet = false;
+      }
+      this.captureFlat();
+    }
+    if (o.shift && this._lastStrokeEnd && !['clone', 'heal'].includes(tool)) {
+      this._line(tool, this._lastStrokeEnd, pt, o);
+      this._last = pt;
+      this._lastStrokeEnd = pt;
+      this.commit();
+      return true;
+    }
+    this._last = pt;
+    this._lastStrokeEnd = pt;
+    this._dab(tool, pt.x, pt.y, o);
+    this.commit();
+    return true;
+  }
+
+  move(tool, pt, o) {
+    if (!this._last) return;
+    this._curPt = pt;
+    this._line(tool, this._last, pt, o);
+    this._last = pt;
+    this._lastStrokeEnd = pt;
+    this.commit();
+  }
+
+  up() {
+    this._last = null;
+    this._curPt = null;
+  }
+
+  /* Fill the (clipped) artboard with a colour — the bucket tool over a selection. */
+  fill(color) {
+    const ctx = this.ctx; ctx.save(); if (this._clip) ctx.clip(this._clip, this._clipRule || 'nonzero');
+    ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1; ctx.fillStyle = color;
+    ctx.fillRect(0, 0, this.W, this.H); ctx.restore(); this.ensure(); this.commit();
+  }
+
+  paintGradient(x1, y1, x2, y2, color1, color2) {
+    const ctx = this.ctx; ctx.save(); if (this._clip) ctx.clip(this._clip, this._clipRule || 'nonzero');
+    ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
+    const g = ctx.createLinearGradient(x1, y1, x2, y2);
+    g.addColorStop(0, color1); g.addColorStop(1, color2);
+    ctx.fillStyle = g; ctx.fillRect(0, 0, this.W, this.H); ctx.restore(); this.ensure(); this.commit();
+  }
+
+  /* Eyedropper: composited colour at a point, as hex. */
+  sample(pt) {
+    this.captureFlat();
+    try {
+      const d = this._flat.getContext('2d').getImageData(Math.round(pt.x), Math.round(pt.y), 1, 1).data;
+      return toHex(d[0], d[1], d[2]);
+    } catch (e) { return null; }
+  }
+
+  /* After undo/redo reloads the scene from JSON, paint layers come back as <img> elements —
+     re-wrap them as canvases so the engine can keep drawing on them. */
+  adopt() {
+    const paintLayers = this.fc.getObjects().filter(x => x.role === 'paint');
+    paintLayers.forEach(o => {
+      if (o && o._element && !(o._element instanceof HTMLCanvasElement)) {
+        const cv = document.createElement('canvas');
+        cv.width = this.W;
+        cv.height = this.H;
+        const ctx = cv.getContext('2d');
+        try { ctx.drawImage(o._element, 0, 0, this.W, this.H); } catch (e) { console.error(e); }
+        o._element = cv;
+        o.dirty = true;
+      }
+    });
+    let activePaint = this.fc.getActiveObject();
+    if (!activePaint || activePaint.role !== 'paint') activePaint = paintLayers[0];
+    if (activePaint) {
+      this.layer = activePaint;
+      this.cv = activePaint._element;
+      this.ctx = activePaint._element.getContext('2d');
+    } else {
+      this.layer = null;
+    }
+  }
+}

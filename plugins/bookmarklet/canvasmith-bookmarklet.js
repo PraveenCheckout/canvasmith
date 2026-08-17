@@ -3,7 +3,7 @@
    It reads the pixels IN THE PAGE's session (so auth-gated images work) and hands the editor a
    dataURL over the postMessage bridge. Set EDITOR to wherever you host the editor. */
 (function () {
-  var EDITOR = (window.CANVASMITH_URL || 'http://localhost:8901/apps/demo/index.html');
+  var EDITOR = (window.CANVASMITH_URL || 'https://canvasmith.netlify.app/');
   var MSG = 'canvasmith:open';
   function send(dataURL) {
     var child = window.open(EDITOR, '_blank');

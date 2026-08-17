@@ -2,7 +2,7 @@
    Opens the configured editor with ?image=<url> — the editor's bridge does the rest.
    (URL transport here: extensions can't rely on page-session canvas reads across sites;
    for auth-gated images use the bookmarklet, which runs inside the page.) */
-const DEFAULT_EDITOR = 'http://localhost:8901/apps/demo/index.html';
+const DEFAULT_EDITOR = 'https://canvasmith.netlify.app/';
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.contextMenus.create({ id: 'canvasmith-edit', title: 'Edit in Canvasmith', contexts: ['image'] });

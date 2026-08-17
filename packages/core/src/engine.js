@@ -222,19 +222,24 @@ export class PaintEngine {
     this._curPt = null;
   }
 
-  /* Fill the (clipped) artboard with a colour — the bucket tool over a selection. */
+  /* Fill the (clipped) artboard with a colour — the bucket tool over a selection.
+     ensure() MUST run before drawing: it swaps in a fresh canvas when no paint layer exists, so
+     drawing first meant the pixels landed on a canvas that was about to be thrown away. down()
+     always had the right order; fill/gradient did not — caught by the demo screenshot session. */
   fill(color) {
+    this.ensure();
     const ctx = this.ctx; ctx.save(); if (this._clip) ctx.clip(this._clip, this._clipRule || 'nonzero');
     ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1; ctx.fillStyle = color;
-    ctx.fillRect(0, 0, this.W, this.H); ctx.restore(); this.ensure(); this.commit();
+    ctx.fillRect(0, 0, this.W, this.H); ctx.restore(); this.commit();
   }
 
   paintGradient(x1, y1, x2, y2, color1, color2) {
+    this.ensure();
     const ctx = this.ctx; ctx.save(); if (this._clip) ctx.clip(this._clip, this._clipRule || 'nonzero');
     ctx.globalCompositeOperation = 'source-over'; ctx.globalAlpha = 1;
     const g = ctx.createLinearGradient(x1, y1, x2, y2);
     g.addColorStop(0, color1); g.addColorStop(1, color2);
-    ctx.fillStyle = g; ctx.fillRect(0, 0, this.W, this.H); ctx.restore(); this.ensure(); this.commit();
+    ctx.fillStyle = g; ctx.fillRect(0, 0, this.W, this.H); ctx.restore(); this.commit();
   }
 
   /* Eyedropper: composited colour at a point, as hex. */
@@ -268,7 +273,12 @@ export class PaintEngine {
       this.cv = activePaint._element;
       this.ctx = activePaint._element.getContext('2d');
     } else {
+      // undo removed every paint layer: drop the orphaned canvas too, or the next fill/gradient
+      // would draw into pixels that no fabric layer displays
       this.layer = null;
+      this.cv = document.createElement('canvas');
+      this.cv.width = this.W; this.cv.height = this.H;
+      this.ctx = this.cv.getContext('2d');
     }
   }
 }

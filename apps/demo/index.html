@@ -57,11 +57,49 @@
 </main>
 
 <script type="module">
-import { Editor, GeminiProvider, installBridge, installDropImport, PAINT_TOOLS }
+import { Editor, GeminiProvider, installBridge, installDropImport, PAINT_TOOLS, selectionToPath2D }
   from '../../packages/core/src/index.js';
 
 const ed = new Editor({ fabric: window.fabric, canvasEl: document.getElementById('cv'), width: 960, height: 640 });
 window.ed = ed;   // poke at the API from the console
+
+/* ── overlay chrome: dashed selection outline + crop scrim, drawn on fabric's top context ──
+   The CORE keeps selection/crop as pure state; making them visible is the shell's job — this is
+   the reference implementation other UIs can copy. */
+const drawOverlays = () => {
+  const ctx = ed.fc.contextTop; if (!ctx) return;
+  ed.fc.clearContext(ctx);
+  const v = ed.fc.viewportTransform;
+  ctx.save(); ctx.transform(v[0], v[1], v[2], v[3], v[4], v[5]);
+  if (ed.selection) {
+    const p = selectionToPath2D(ed.selection, ed.W, ed.H);
+    ctx.lineWidth = 1.6 / v[0];
+    ctx.setLineDash([7 / v[0], 5 / v[0]]);
+    ctx.strokeStyle = '#d4ff45'; ctx.stroke(p);
+    ctx.lineDashOffset = 6 / v[0]; ctx.strokeStyle = 'rgba(0,0,0,.85)'; ctx.stroke(p);
+    ctx.setLineDash([]);
+  }
+  if (ed.crop) {
+    const c = ed.crop;
+    ctx.fillStyle = 'rgba(0,0,0,0.48)';
+    ctx.beginPath(); ctx.rect(0, 0, ed.W, ed.H); ctx.rect(c.x, c.y, c.w, c.h); ctx.fill('evenodd');
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.4 / v[0]; ctx.strokeRect(c.x, c.y, c.w, c.h);
+    // rule-of-thirds guides
+    ctx.lineWidth = 0.7 / v[0]; ctx.strokeStyle = 'rgba(255,255,255,0.5)';
+    for (let i = 1; i < 3; i++) {
+      ctx.beginPath(); ctx.moveTo(c.x + c.w * i / 3, c.y); ctx.lineTo(c.x + c.w * i / 3, c.y + c.h); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(c.x, c.y + c.h * i / 3); ctx.lineTo(c.x + c.w, c.y + c.h * i / 3); ctx.stroke();
+    }
+    const hs = 5.5 / v[0]; ctx.fillStyle = '#d4ff45';
+    for (const [hx, hy] of [[c.x, c.y], [c.x + c.w, c.y], [c.x, c.y + c.h], [c.x + c.w, c.y + c.h],
+                            [c.x + c.w / 2, c.y], [c.x + c.w / 2, c.y + c.h], [c.x, c.y + c.h / 2], [c.x + c.w, c.y + c.h / 2]])
+      ctx.fillRect(hx - hs, hy - hs, hs * 2, hs * 2);
+  }
+  ctx.restore();
+};
+ed.fc.on('after:render', drawOverlays);
+ed.on('selection', () => ed.fc.requestRenderAll());
+ed.on('crop', () => ed.fc.requestRenderAll());
 
 /* ── toolbar (grouped) ─────────────────────────────────────────────── */
 const GROUPS = {

@@ -4,17 +4,17 @@
 
 Use the complete tool with one `<script>`, or import the JS functions and build your own UI.
 
-## What's inside
+![A finished moodboard design tilting into 3D and unpacking into dozens of labelled layers — people, clothing, vehicles, maps, symbols — as the camera travels up through the stack](docs/hero.gif)
 
-- **20+ tools** — brush, pencil, eraser, clone stamp, healing, dodge/burn/sponge, red-eye,
-  marquee/ellipse/lasso/magic-wand selections (selections clip paint strokes), shapes, text,
-  bucket, gradient, eyedropper, crop, pan/zoom
-- **Layers** — reorder, rename, hide, lock, opacity, blend modes
-- **History** — snapshot undo/redo that is correct for raster AND vector edits
-- **AI seam** — bring any provider; a free-tier **Gemini** provider ships in the box (every Google
-  account gets a free daily allowance at [aistudio.google.com/apikey](https://aistudio.google.com/apikey) — no card)
-- **Import bridge** — open images straight from Midjourney/ChatGPT/Ideogram/SD-WebUI/ComfyUI via
-  URL param, postMessage, bookmarklet or browser extension (see `plugins/`)
+<sup>↑ the idea Canvasmith is built around: everything on the board is a live, labelled, editable layer.</sup>
+
+## The tools, shown working
+
+| | |
+|---|---|
+| **Magic wand** — one click traces the region's real silhouette ![Wand selection: a dashed outline hugging the candle and flame](docs/f-selection.png) | **Fill** — the bucket pours colour only inside the live selection ![Bucket fill: violet poured into the wand-selected wall, candle untouched](docs/f-fill.png) |
+| **Gradient** — clipped by any selection, here an ellipse marquee ![Linear lime-to-violet gradient rendered inside a dashed ellipse selection](docs/f-gradient.png) | **Crop** — scrim, rule-of-thirds guides, zoom-aware handles ![Crop tool: darkened surround, thirds grid, lime corner and edge handles](docs/f-crop.png) |
+| **Colour** — eyedropper samples the flame, the brush paints with it ![A warm stroke painted in the exact colour sampled from the flame; the toolbar swatch shows it](docs/f-color.png) | |
 
 ## Quick start — complete tool (no build)
 

@@ -1,0 +1,16 @@
+# Netlify: serve the repo as-is (the demo runs straight off source ES modules — no build step).
+[build]
+  publish = "."
+  command = "echo 'no build needed — the demo imports packages/core/src directly'"
+
+# the demo IS the site
+[[redirects]]
+  from = "/"
+  to = "/apps/demo/index.html"
+  status = 200
+
+# ES modules need correct MIME (Netlify default is fine, but pin it) + long-cache the docs assets
+[[headers]]
+  for = "/packages/*"
+  [headers.values]
+    Access-Control-Allow-Origin = "*"

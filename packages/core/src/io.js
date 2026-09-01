@@ -67,3 +67,15 @@ export function artboardForImage(src, cap = 1600) {
     im.src = src;
   });
 }
+
+/* Plain <img> load (no fabric wrapping) — for callers that need raw pixel access, e.g. cropping
+   per-region canvases out of a flattened source in detectRegionsToLayers(). */
+export function loadImageEl(src) {
+  return new Promise((resolve, reject) => {
+    const im = new Image();
+    im.onload = () => resolve(im);
+    im.onerror = () => reject(new Error('Could not load that image.'));
+    im.crossOrigin = 'anonymous';
+    im.src = src;
+  });
+}

@@ -3,12 +3,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { hexRgb, rgba, toHex, relLum } from '../packages/core/src/color.js';
+import { hexRgb, rgba, toHex, relLum, rgbToHsl, hslToRgb, hexToHsl, recolorPixels, fxToFilterSpecs, FX_DEFAULTS } from '../packages/core/src/color.js';
 import { History } from '../packages/core/src/history.js';
-import { startSelection, updateSelection, finalizeSelection, floodSelectPolygon, selectionFillRule } from '../packages/core/src/selection.js';
+import {
+  startSelection, updateSelection, finalizeSelection, floodSelectPolygon, selectionFillRule,
+  startPolyBuild, polyBuildAdd, polyBuildPreview, finishPolyBuild,
+  buildEdgeMapFromImageData, snapToEdge,
+  selectionPolys, polysToSelection, addPolyToSelection, selectionBounds, HoverCache,
+} from '../packages/core/src/selection.js';
 import { getCropHandle, dragCropRect } from '../packages/core/src/crop.js';
+import { alignDelta, snapDelta } from '../packages/core/src/layout.js';
 import { parseLaunch } from '../packages/core/src/bridge.js';
 import { starPoints } from '../packages/core/src/shapes.js';
+import { cvWorkerSource } from '../packages/core/src/cv/worker.js';
+import { CvEngine } from '../packages/core/src/cv/client.js';
 
 /* ── colour ─────────────────────────────────────────────────────────── */
 test('color: hex round-trips and short form expands', () => {
@@ -112,6 +120,36 @@ test('crop: dragging edges resizes, ratio locks aspect, min size holds', () => {
   assert.equal(clamped.w, 24);                           // never collapses below min
 });
 
+/* ── layout: align + snap ──────────────────────────────────────────── */
+test('layout: alignDelta moves a box to each artboard edge/axis', () => {
+  const box = { left: 30, top: 40, width: 20, height: 10 };
+  assert.deepEqual(alignDelta(box, 100, 100, 'left'), { dx: -30, dy: 0 });
+  assert.deepEqual(alignDelta(box, 100, 100, 'right'), { dx: 50, dy: 0 });
+  assert.deepEqual(alignDelta(box, 100, 100, 'center'), { dx: 10, dy: 0 });
+  assert.deepEqual(alignDelta(box, 100, 100, 'top'), { dx: 0, dy: -40 });
+  assert.deepEqual(alignDelta(box, 100, 100, 'bottom'), { dx: 0, dy: 50 });
+  assert.deepEqual(alignDelta(box, 100, 100, 'middle'), { dx: 0, dy: 5 });
+});
+
+test('layout: snapDelta pulls a moving box to the artboard center within threshold', () => {
+  const box = { left: 46, top: 46, width: 10, height: 10 };   // center at (51,51), artboard center (50,50)
+  const r = snapDelta(box, 100, 100, [], 8);
+  assert.equal(r.snappedX, true); assert.equal(r.snappedY, true);
+  assert.equal(box.left + r.dx + box.width / 2, 50);
+  assert.equal(box.top + r.dy + box.height / 2, 50);
+});
+
+test('layout: snapDelta snaps to a sibling layer edge, ignores out-of-threshold ones', () => {
+  const box = { left: 108, top: 0, width: 20, height: 20 };   // left edge at 108
+  const sibling = { left: 0, top: 0, width: 100, height: 20 }; // right edge at 100 — 8px away, within threshold
+  const r = snapDelta(box, 500, 500, [sibling], 8);
+  assert.equal(r.snappedX, true);
+  assert.equal(box.left + r.dx, 100);
+  const far = snapDelta({ ...box, left: 130 }, 500, 500, [sibling], 8);
+  assert.equal(far.snappedX, false);
+  assert.equal(far.dx, 0);
+});
+
 /* ── bridge launch parsing ──────────────────────────────────────────── */
 test('bridge: parses ?image=, #img=, storage handoff, and rejects junk', () => {
   assert.deepEqual(parseLaunch('?image=https%3A%2F%2Fx.com%2Fa.png', '', null),
@@ -131,4 +169,170 @@ test('shapes: starPoints yields 2n vertices alternating radii', () => {
   assert.equal(pts.length, 10);
   const r0 = Math.hypot(pts[0].x, pts[0].y), r1 = Math.hypot(pts[1].x, pts[1].y);
   assert.ok(Math.abs(r0 - 10) < 1e-9 && Math.abs(r1 - 5) < 1e-9);
+});
+
+/* ── HSL recolour ───────────────────────────────────────────────────── */
+test('color: rgb<->hsl round-trips exactly for integer channels', () => {
+  for (const [r, g, b] of [[200, 50, 50], [0, 0, 0], [255, 255, 255], [10, 200, 90]]) {
+    const hsl = rgbToHsl(r, g, b);
+    assert.deepEqual(hslToRgb(hsl.h, hsl.s, hsl.l), { r, g, b });
+  }
+});
+
+test('color: hexToHsl matches rgbToHsl of the same colour', () => {
+  assert.deepEqual(hexToHsl('#6496c8'), rgbToHsl(100, 150, 200));
+});
+
+test('color: recolorPixels keeps lightness, skips transparent pixels', () => {
+  // a mid-grey pixel recoloured toward pure green should land near pure green at the same lightness
+  const data = new Uint8ClampedArray([128, 128, 128, 255, /* transparent: */ 9, 9, 9, 0]);
+  recolorPixels(data, '#00ff00');
+  const before = rgbToHsl(128, 128, 128), after = rgbToHsl(data[0], data[1], data[2]);
+  assert.ok(Math.abs(before.l - after.l) < 1e-6, 'lightness preserved');
+  assert.deepEqual([data[4], data[5], data[6], data[7]], [9, 9, 9, 0], 'transparent pixel untouched');
+});
+
+/* ── polygon lasso (click-to-place) ─────────────────────────────────── */
+test('selection: polyBuildAdd closes the loop near the first point', () => {
+  let b = startPolyBuild();
+  b = polyBuildAdd(b, { x: 0, y: 0 });
+  b = polyBuildAdd(b, { x: 10, y: 0 });
+  b = polyBuildAdd(b, { x: 10, y: 10 });
+  const closed = polyBuildAdd(b, { x: 1, y: 1 }, 12);
+  assert.equal(closed.closed, true);
+  assert.equal(closed.pts.length, 3);               // the closing click is not added as a 4th vertex
+});
+
+test('selection: polyBuildAdd keeps building when far from the start', () => {
+  let b = startPolyBuild();
+  b = polyBuildAdd(b, { x: 0, y: 0 });
+  b = polyBuildAdd(b, { x: 50, y: 50 });
+  assert.equal(b.closed, undefined);
+  assert.equal(b.pts.length, 2);
+});
+
+test('selection: polyBuildPreview appends a trailing point without mutating the build', () => {
+  const b = { pts: [{ x: 0, y: 0 }, { x: 10, y: 0 }] };
+  const preview = polyBuildPreview(b, { x: 10, y: 10 });
+  assert.equal(preview.kind, 'poly');
+  assert.equal(preview.building, true);
+  assert.equal(preview.pts.length, 3);
+  assert.equal(b.pts.length, 2);                     // original build untouched
+});
+
+test('selection: finishPolyBuild rejects cancellation and too-short builds', () => {
+  assert.equal(finishPolyBuild({ pts: [{ x: 0, y: 0 }, { x: 1, y: 1 }] }), null);   // < 3 points
+  assert.equal(finishPolyBuild({ pts: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }] }, true), null); // cancelled
+  const ok = finishPolyBuild({ pts: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }] }, false);
+  assert.deepEqual(ok, { kind: 'poly', pts: [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }] });
+});
+
+/* ── magnetic lasso: edge map + snap ────────────────────────────────── */
+test('selection: buildEdgeMapFromImageData + snapToEdge pulls a point onto a bright edge', () => {
+  const w = 10, h = 10, data = new Uint8ClampedArray(w * h * 4).fill(0);
+  for (let x = 0; x < w; x++) { const i = (5 * w + x) * 4; data[i] = 255; data[i + 1] = 255; data[i + 2] = 255; data[i + 3] = 255; }
+  const map = buildEdgeMapFromImageData({ width: w, height: h, data }, 100, 100);   // scene is a 10x scale of the 10px grid
+  // the Sobel gradient peaks at the bright row's edges (grid rows 4 and 6), not the row itself
+  const snapped = snapToEdge(map, { x: 50, y: 42 });
+  assert.ok(snapped.y === 40 || snapped.y === 60, 'snapped onto one of the bright row\'s edges');
+  const farFromAnyEdge = snapToEdge(map, { x: 50, y: 95 }, 2);   // small radius can't reach the edge from here
+  assert.deepEqual(farFromAnyEdge, { x: 50, y: 95 });
+});
+
+test('selection: snapToEdge returns the point unchanged with no edge map', () => {
+  assert.deepEqual(snapToEdge(null, { x: 5, y: 5 }), { x: 5, y: 5 });
+});
+
+/* ── selection composition: add / bounds ────────────────────────────── */
+test('selection: selectionPolys normalizes rect/poly/multipoly into polygon rings', () => {
+  assert.deepEqual(selectionPolys(null), null);
+  assert.deepEqual(selectionPolys({ kind: 'rect', x: 0, y: 0, w: 10, h: 5 }),
+    [[{ x: 0, y: 0 }, { x: 10, y: 0 }, { x: 10, y: 5 }, { x: 0, y: 5 }]]);
+  const pts = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }];
+  assert.deepEqual(selectionPolys({ kind: 'poly', pts }), [pts]);
+  const polys = [pts, pts];
+  assert.equal(selectionPolys({ kind: 'multipoly', polys }), polys);
+});
+
+test('selection: polysToSelection wraps one ring as poly, several as multipoly', () => {
+  const ring = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }];
+  assert.deepEqual(polysToSelection([ring]), { kind: 'poly', pts: ring });
+  assert.deepEqual(polysToSelection([ring, ring]), { kind: 'multipoly', polys: [ring, ring] });
+  assert.equal(polysToSelection([]), null);
+});
+
+test('selection: addPolyToSelection accumulates into a multipoly without a prior selection', () => {
+  const ring = [{ x: 0, y: 0 }, { x: 1, y: 0 }, { x: 1, y: 1 }];
+  const sel = addPolyToSelection(null, ring);
+  assert.deepEqual(sel, { kind: 'poly', pts: ring });
+  const sel2 = addPolyToSelection(sel, ring);
+  assert.equal(sel2.kind, 'multipoly');
+  assert.equal(sel2.polys.length, 2);
+});
+
+test('selection: selectionBounds covers rect, poly and the no-selection (full canvas) case', () => {
+  assert.deepEqual(selectionBounds(null, 200, 100), { x: 0, y: 0, w: 200, h: 100 });
+  assert.deepEqual(selectionBounds({ kind: 'rect', x: 5, y: 5, w: 10, h: 20 }, 200, 100), { x: 5, y: 5, w: 10, h: 20 });
+  const poly = { kind: 'poly', pts: [{ x: 3, y: 4 }, { x: 9, y: 1 }, { x: 6, y: 8 }] };
+  assert.deepEqual(selectionBounds(poly, 200, 100), { x: 3, y: 1, w: 6, h: 7 });
+});
+
+test('selection: HoverCache is a capped LRU — least-recently-inserted evicts when never accessed', () => {
+  const c = new HoverCache(2);
+  c.put('a', 1); c.put('b', 2); c.put('c', 3);        // 'a' evicted — cap is 2
+  assert.equal(c.get('a'), null);
+  assert.equal(c.get('b'), 2);
+  assert.equal(c.get('c'), 3);
+  assert.equal(c.size, 2);
+});
+
+test('selection: HoverCache.get refreshes recency, so a re-accessed entry survives eviction', () => {
+  const c = new HoverCache(2);
+  c.put('a', 1); c.put('b', 2);
+  c.get('a');                                          // 'a' is now the most-recently-used
+  c.put('c', 3);                                        // 'b' is least-recently-used — evicted, not 'a'
+  assert.equal(c.get('a'), 1);
+  assert.equal(c.get('b'), null);
+  assert.equal(c.get('c'), 3);
+});
+
+/* ── OpenCV worker: stringified source is self-contained and boots lazily ──────────────── */
+test('cv: cvWorkerSource embeds the OpenCV URL and is syntactically valid standalone JS', () => {
+  const src = cvWorkerSource('https://example.test/opencv.js');
+  assert.ok(src.includes('https://example.test/opencv.js'));
+  assert.ok(src.includes('importScripts'));
+  assert.doesNotThrow(() => new Function(src));       // parses; never executed outside a Worker
+});
+
+test('cv: CvEngine degrades to null (never throws) with no Worker support', async () => {
+  const cv = new CvEngine();
+  const img = { width: 2, height: 2, data: new Uint8ClampedArray(16) };
+  const r = await cv.wand(img, { cx: 1, cy: 1 }, 32, 0.002);
+  assert.equal(r, null);
+  assert.equal(cv.unavailable, true);
+  cv.destroy();
+});
+
+/* ── image adjustment: fx -> Fabric filter spec mapping (Editor#setImageFilters) ──────────── */
+test('color: fxToFilterSpecs maps defaults to zero/neutral filter params', () => {
+  const specs = fxToFilterSpecs(FX_DEFAULTS);
+  assert.deepEqual(specs.map(s => s.type), ['Brightness', 'Contrast', 'Saturation', 'Blur']);
+  assert.deepEqual(specs.find(s => s.type === 'Brightness').params, { brightness: 0 });
+  assert.deepEqual(specs.find(s => s.type === 'Contrast').params, { contrast: 0 });
+  assert.deepEqual(specs.find(s => s.type === 'Saturation').params, { saturation: 0 });
+  assert.deepEqual(specs.find(s => s.type === 'Blur').params, { blur: 0 });
+});
+
+test('color: fxToFilterSpecs maps non-default human values exactly like the reference setFx', () => {
+  const specs = fxToFilterSpecs({ brightness: 150, contrast: 50, saturate: 200, blur: 10 });
+  assert.deepEqual(specs.find(s => s.type === 'Brightness').params, { brightness: 0.5 });
+  assert.deepEqual(specs.find(s => s.type === 'Contrast').params, { contrast: -0.5 });
+  assert.deepEqual(specs.find(s => s.type === 'Saturation').params, { saturation: 1 });
+  assert.deepEqual(specs.find(s => s.type === 'Blur').params, { blur: 0.5 });
+});
+
+test('color: fxToFilterSpecs fills in missing keys from FX_DEFAULTS', () => {
+  const specs = fxToFilterSpecs({ blur: 4 });
+  assert.deepEqual(specs.find(s => s.type === 'Brightness').params, { brightness: 0 });
+  assert.deepEqual(specs.find(s => s.type === 'Blur').params, { blur: 0.2 });
 });

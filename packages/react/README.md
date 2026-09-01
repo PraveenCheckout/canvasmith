@@ -16,5 +16,3 @@ No React in your stack? One script tag:
 ```
 
 Full docs, demo and the headless core: **github.com/laxmanverma/canvasmith** · MIT
-
-"text"

@@ -8,25 +8,93 @@
      native ES modules straight from src/. This page IS the "bring your own UI" story. -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/fabric.js/5.3.0/fabric.min.js"></script>
 <style>
-  :root { --bg:#141417; --panel:#1b1b20; --line:#2a2a31; --ink:#eceae4; --dim:#9a978f; --accent:#d4ff45; }
+  :root[data-mode="dark"], :root { --bg:#141417; --panel:#1b1b20; --line:#2a2a31; --ink:#eceae4; --dim:#9a978f; --accent:#d4ff45; --accent-ink:#111; --stage:#0e0e11; }
+  :root[data-mode="light"] { --bg:#f4f3ef; --panel:#ffffff; --line:#dedbd2; --ink:#1c1b18; --dim:#726f66; --accent:#6f6a00; --accent-ink:#fff; --stage:#e4e2da; }
   * { box-sizing:border-box } html,body { margin:0; height:100% }
   body { background:var(--bg); color:var(--ink); font:13px/1.5 system-ui,sans-serif; display:grid;
          grid-template-rows:46px 1fr; height:100vh }
   header { display:flex; align-items:center; gap:8px; padding:0 12px; background:var(--panel); border-bottom:1px solid var(--line) }
   header b { color:var(--accent) } header .sp { flex:1 }
-  main { display:grid; grid-template-columns:150px 1fr 210px; min-height:0 }
-  nav, aside { background:var(--panel); overflow-y:auto; padding:8px }
-  nav { border-right:1px solid var(--line) } aside { border-left:1px solid var(--line) }
-  #stage { display:grid; place-items:center; overflow:hidden;
-           background:repeating-conic-gradient(#151519 0 25%,#101014 0 50%) 0 0/22px 22px }
+  /* rail | Tool/Layers (left, tab-driven) | canvas | Properties (right, selection-driven) — same
+     4-column split as the reference editor, with each side panel independently collapsible. */
+  main { display:grid; grid-template-columns:56px 232px 1fr 322px; min-height:0; transition:grid-template-columns .15s; position:relative }
+  main[data-left-collapsed=true] { grid-template-columns:56px 0px 1fr 322px }
+  main[data-right-collapsed=true] { grid-template-columns:56px 232px 1fr 0px }
+  main[data-left-collapsed=true][data-right-collapsed=true] { grid-template-columns:56px 0px 1fr 0px }
+  nav, #right-panel { background:var(--panel); overflow-y:auto; padding:8px }
+  nav { border-right:1px solid var(--line); overflow:visible; display:flex; flex-direction:column; align-items:center; gap:2px; padding:8px 8px; position:relative; z-index:10 }
+  #left-panel { background:var(--panel); border-right:1px solid var(--line); overflow:hidden; padding:8px; display:flex; flex-direction:column; min-height:0 }
+  #tool-panel { overflow-y:auto; min-height:0 }
+  #right-panel { border-left:1px solid var(--line); overflow-x:hidden }
+  main[data-left-collapsed=true] #left-panel { padding:0; width:0 }
+  main[data-right-collapsed=true] #right-panel { padding:0; width:0 }
+  /* icon rail: one button per tool group, an active-tool accent fill, and a corner caret when the
+     group holds 2+ tools — click toggles a flyout popover listing them (ditto's own rail pattern) */
+  .rail-btn { all:unset; cursor:pointer; width:40px; height:36px; border-radius:8px; display:flex; align-items:center; justify-content:center; position:relative; color:var(--dim) }
+  .rail-btn:hover { background:var(--bg) }
+  .rail-btn[data-on=true] { background:var(--accent); color:var(--accent-ink) }
+  .rail-caret { position:absolute; right:3px; bottom:3px; width:0; height:0; border-left:4px solid transparent; border-bottom:4px solid var(--dim) }
+  .rail-btn[data-on=true] .rail-caret { border-bottom-color:var(--accent-ink) }
+  .rail-group { position:relative }
+  .rail-flyout { position:absolute; left:46px; top:0; z-index:60; min-width:190px; background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:6px; box-shadow:0 8px 24px rgba(0,0,0,.35) }
+  .rail-flyout-item { display:flex; align-items:center; gap:9px; padding:7px 9px; border-radius:7px; cursor:pointer; font-size:12.5px; color:var(--ink) }
+  .rail-flyout-item:hover, .rail-flyout-item[data-on=true] { background:var(--bg) }
+  .rail-flyout-item svg { flex-shrink:0; color:var(--dim) }
+  .rail-flyout-item[data-on=true] svg { color:var(--accent) }
+  .rail-flyout-item .sc { margin-left:auto; font-size:10.5px; color:var(--dim); font-family:ui-monospace,monospace }
+  .rail-tip { position:fixed; z-index:70; background:var(--ink); color:var(--panel); font-size:11.5px; font-weight:600; padding:5px 9px; border-radius:6px; pointer-events:none; white-space:nowrap; transform:translateY(-50%) }
+  .rail-bottom { display:flex; flex-direction:column; align-items:center; gap:2px; margin-top:6px; padding-top:6px; border-top:1px solid var(--line) }
+  .tabs { display:flex; gap:4px; margin-bottom:10px }
+  .tabs button { display:flex; align-items:center; gap:6px; width:auto; padding:7px 10px; border-radius:8px; font-size:12.5px; font-weight:600; color:var(--dim) }
+  .tabs button:hover { background:var(--bg) } .tabs button[data-on=true] { background:var(--bg); color:var(--ink) }
+  .collapse-btn { position:absolute; top:50%; width:14px; height:48px; padding:0; transform:translateY(-50%);
+    border:1px solid var(--line); background:var(--panel); color:var(--dim); cursor:pointer; display:flex; align-items:center; justify-content:center; z-index:2; transition:left .15s, right .15s }
+  .collapse-btn:hover { color:var(--ink); border-color:var(--accent) }
+  #collapse-left { border-radius:0 6px 6px 0; border-left:none }
+  #collapse-right { border-radius:6px 0 0 6px; border-right:none }
+  .collapse-btn[data-flip=true] svg { transform:rotate(180deg) }
+  #collapse-left { left:287px }
+  main[data-left-collapsed=true] #collapse-left { left:55px }
+  #collapse-right { right:321px }
+  main[data-right-collapsed=true] #collapse-right { right:0 }
+  .align-grid { display:grid; grid-template-columns:repeat(6,1fr); gap:6px; margin:10px 0 }
+  .align-grid button { display:flex; align-items:center; justify-content:center; height:28px; border-radius:7px; border:1px solid var(--line); font-size:11px; color:var(--ink) }
+  .align-grid button:hover { border-color:var(--accent) }
+  .pill-toggle { width:auto; display:inline-flex; padding:6px 12px; border-radius:999px; font-size:12px; font-weight:600; border:1px solid var(--line); color:var(--dim); margin-top:10px }
+  .pill-toggle[data-on=true] { background:var(--ink); color:var(--panel); border-color:var(--ink) }
+  #stage { display:grid; place-items:center; overflow:hidden; background:var(--stage) }
   .grp { font-size:9px; letter-spacing:.1em; text-transform:uppercase; color:var(--dim); margin:10px 4px 4px }
-  button { all:unset; cursor:pointer; display:block; width:100%; padding:6px 9px; border-radius:7px; font-size:12.5px }
-  button:hover { background:var(--bg) } button[data-on=true] { background:var(--accent); color:#111 }
-  .act { border:1px solid var(--line); text-align:center; margin-top:6px } .act:hover { border-color:var(--accent) }
-  input[type=range] { width:110px } input[type=color] { width:26px; height:24px; border:none; background:none }
-  .layer { display:flex; gap:6px; align-items:center; padding:4px 6px; border-radius:6px; font-size:12px; cursor:pointer }
-  .layer:hover { background:var(--bg) } .layer[data-on=true] { outline:1px solid var(--accent) }
-  .layer span:first-child { cursor:pointer } .layer .nm { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  button { all:unset; cursor:pointer; display:flex; align-items:center; gap:7px; width:100%; padding:6px 9px; border-radius:7px; font-size:12.5px }
+  button:hover { background:var(--bg) } button[data-on=true] { background:var(--accent); color:var(--accent-ink) }
+  button[data-on=true] svg { color:var(--accent-ink) }
+  .act { border:1px solid var(--line); text-align:center; margin-top:6px; width:auto; display:inline-flex; justify-content:center } .act:hover { border-color:var(--accent) }
+  .icon-btn { all:unset; cursor:pointer; display:flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:7px; border:1px solid var(--line); color:var(--ink) }
+  .icon-btn:hover { border-color:var(--accent) }
+  nav button svg, .layer svg { flex-shrink:0; color:inherit }
+  input[type=range] { width:110px; min-width:0 } input[type=color] { width:26px; height:24px; border:none; background:none }
+  /* layer row: thumbnail + name/subtitle + hover-reveal action icons — mirrors the reference
+     editor's layer list (28px thumb, dimmed-until-hover reorder/lock/eye/delete). */
+  .layer { display:flex; gap:7px; align-items:center; padding:5px 7px; border-radius:8px; font-size:12px; cursor:grab }
+  .layer:hover { background:var(--bg) } .layer[data-on=true] { background:var(--bg); outline:1px solid var(--accent) }
+  .layer[data-visible=false] { opacity:.45 }
+  .layer-thumb { flex:none; width:28px; height:28px; border-radius:6px; overflow:hidden; display:grid; place-items:center; background:var(--stage); border:1px solid var(--line) }
+  .layer[data-on=true] .layer-thumb { border-color:var(--accent) }
+  .layer-thumb img { max-width:100%; max-height:100%; object-fit:contain; display:block; pointer-events:none }
+  .layer-thumb svg { color:var(--dim) }
+  .layer-meta { flex:1; min-width:0; line-height:1.25 }
+  .layer-meta .nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:600; display:block }
+  .layer-meta .sub { font-size:10px; color:var(--dim); font-family:ui-monospace,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:block; margin-top:1px }
+  .layer-actions { display:flex; gap:1px; flex:none; margin-left:auto; opacity:0 }
+  .layer:hover .layer-actions, .layer[data-on=true] .layer-actions { opacity:1 }
+  .layer-actions button { all:unset; cursor:pointer; width:20px; height:20px; display:flex; align-items:center; justify-content:center; border-radius:5px; color:var(--dim) }
+  .layer-actions button:hover { background:var(--panel); color:var(--ink) }
+  .layer-actions button[data-active=true] { opacity:1; color:var(--ink) }
+  .chip { all:unset; cursor:pointer; display:inline-flex; align-items:center; gap:5px; width:auto; padding:6px 11px; border-radius:999px; font-size:11.5px; font-weight:600; border:1px solid var(--line); color:var(--ink) }
+  .chip:hover { border-color:var(--accent) }
+  .asset-thumb { flex:none; width:56px; cursor:pointer; text-align:center }
+  .asset-thumb img { width:56px; height:56px; object-fit:cover; border-radius:8px; border:1px solid var(--line); display:block }
+  .asset-thumb span { display:block; font-size:10px; color:var(--dim); margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  .asset-thumb:hover img { border-color:var(--accent) }
   #aibox input { width:100%; background:var(--bg); border:1px solid var(--line); border-radius:7px; color:var(--ink); padding:6px 8px; font-size:12px }
   .note { color:var(--dim); font-size:11px; margin-top:6px; line-height:1.5 }
 </style>
@@ -38,30 +106,226 @@
   <label>Size <input type="range" id="size" min="2" max="220" value="30"></label>
   <label>Opacity <input type="range" id="op" min="0.05" max="1" step="0.05" value="1"></label>
   <input type="color" id="col" value="#d4ff45" title="colour">
-  <button class="act" style="width:auto;padding:5px 10px" id="undo">↩</button>
-  <button class="act" style="width:auto;padding:5px 10px" id="redo">↪</button>
+  <button class="icon-btn" id="undo" title="Undo"></button>
+  <button class="icon-btn" id="redo" title="Redo"></button>
+  <button class="icon-btn" id="theme-toggle" title="Toggle light/dark theme"></button>
   <button class="act" style="width:auto;padding:5px 10px" id="png">⬇ PNG</button>
+  <button class="act" style="width:auto;padding:5px 10px" id="svg">⬇ SVG</button>
 </header>
 <main>
   <nav id="tools"></nav>
+
+  <!-- LEFT: Tool / Layers tabs — tool-specific hints & actions, or the layer list + open/AI -->
+  <div id="left-panel">
+    <div class="tabs">
+      <button data-tab="tool" data-on="true"></button>
+      <button data-tab="layers"></button>
+    </div>
+    <div id="tool-panel">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        <span id="tool-icon"></span><strong id="tool-name" style="text-transform:capitalize"></strong>
+      </div>
+      <div class="note" id="tool-hint" style="margin-top:0"></div>
+      <button class="pill-toggle" id="snap-toggle" data-on="true">Snap: on</button>
+
+      <div class="grp">Align to canvas</div>
+      <div class="align-grid">
+        <button data-edge="left">L</button><button data-edge="center">C</button><button data-edge="right">R</button>
+        <button data-edge="top">T</button><button data-edge="middle">M</button><button data-edge="bottom">B</button>
+      </div>
+      <button class="act" id="duplicate" style="width:100%"></button>
+
+      <div class="grp">Selection (needs a selection)</div>
+      <div style="display:flex;gap:6px">
+        <button class="act" id="sel-expand" style="flex:1"></button>
+        <button class="act" id="sel-contract" style="flex:1"></button>
+      </div>
+      <button class="act" id="sel-similar" style="width:100%;margin-top:6px"></button>
+      <button class="act" id="sel-recolor-btn" style="width:100%;margin-top:6px"></button>
+      <input type="color" id="sel-recolor" value="#d4ff45" style="width:100%;margin-top:6px;display:none">
+      <div class="note" id="sel-msg"></div>
+    </div>
+    <div id="layers-panel" style="display:none; flex-direction:column; flex:1; min-height:0">
+      <div class="grp">Layers</div>
+      <div id="layers" style="flex:1; overflow-y:auto; min-height:60px"></div>
+      <div class="grp">Add element</div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px">
+        <button class="chip" id="add-text"></button>
+        <button class="chip" id="add-box"></button>
+        <button class="chip" id="add-circle"></button>
+        <button class="chip" id="add-image"></button>
+        <button class="chip" id="add-paint"></button>
+      </div>
+      <div class="grp">Open</div>
+      <button class="act" id="openfile">📁 Open image…</button>
+      <input type="file" id="file" accept="image/*" hidden>
+      <div class="note">…or just drag &amp; drop / paste an image anywhere on the canvas, or open this page with <code>?image=&lt;url&gt;</code>.</div>
+      <div class="grp">AI (free Gemini key)</div>
+      <div id="aibox"></div>
+    </div>
+  </div>
+
   <div id="stage"><canvas id="cv"></canvas></div>
-  <aside>
-    <div class="grp">Layers</div><div id="layers"></div>
-    <div class="grp">Open</div>
-    <button class="act" id="openfile">📁 Open image…</button>
-    <input type="file" id="file" accept="image/*" hidden>
-    <div class="note">…or just drag &amp; drop / paste an image anywhere on the canvas, or open this page with <code>?image=&lt;url&gt;</code>.</div>
-    <div class="grp">AI (free Gemini key)</div>
-    <div id="aibox"></div>
-  </aside>
+  <button class="collapse-btn" id="collapse-left" title="Hide Tool/Layers panel"></button>
+  <button class="collapse-btn" id="collapse-right" title="Hide Properties panel"></button>
+
+  <!-- RIGHT: Properties — always reflects the current fabric selection, not the active tool -->
+  <div id="right-panel">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <strong id="props-title" style="font-size:13px">Properties</strong>
+    </div>
+
+    <div class="grp">Stacking (needs a layer)</div>
+    <div style="display:flex;gap:6px">
+      <button class="icon-btn" id="stack-top" title="Bring to front" style="width:auto;flex:1"></button>
+      <button class="icon-btn" id="stack-up" title="Bring forward" style="width:auto;flex:1"></button>
+      <button class="icon-btn" id="stack-down" title="Send backward" style="width:auto;flex:1"></button>
+      <button class="icon-btn" id="stack-bottom" title="Send to back" style="width:auto;flex:1"></button>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:6px">
+      <button class="act" id="group-btn" style="flex:1"></button>
+      <button class="act" id="ungroup-btn" style="flex:1"></button>
+    </div>
+
+    <div id="adjust-section" style="display:none">
+      <div class="grp">Adjust (image only)</div>
+      <label style="display:flex;align-items:center;gap:8px" id="adj-brightness-row">Brightness <input type="range" id="adj-brightness" min="50" max="150" value="100" style="flex:1;width:auto"></label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:4px" id="adj-contrast-row">Contrast <input type="range" id="adj-contrast" min="50" max="150" value="100" style="flex:1;width:auto"></label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:4px" id="adj-saturate-row">Saturation <input type="range" id="adj-saturate" min="0" max="200" value="100" style="flex:1;width:auto"></label>
+      <label style="display:flex;align-items:center;gap:8px;margin-top:4px" id="adj-blur-row">Blur <input type="range" id="adj-blur" min="0" max="12" step="0.5" value="0" style="flex:1;width:auto"></label>
+    </div>
+
+    <div class="grp">Blend &amp; opacity (needs a layer)</div>
+    <select id="blend-mode" class="field" style="width:100%;background:var(--bg);color:var(--ink);border:1px solid var(--line);border-radius:7px;padding:6px 8px;font-size:12px"></select>
+    <label style="display:flex;align-items:center;gap:8px;margin-top:6px">Opacity <input type="range" id="layer-opacity" min="0" max="1" step="0.05" value="1" style="flex:1;width:auto"></label>
+
+    <div class="grp">Transform (needs a layer)</div>
+    <label style="display:flex;align-items:center;gap:8px">Rotation <input type="range" id="xf-angle" min="0" max="360" value="0" style="flex:1;width:auto"></label>
+    <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+      <label style="flex:1;min-width:60px">X <input type="number" id="xf-x" style="width:100%"></label>
+      <label style="flex:1;min-width:60px">Y <input type="number" id="xf-y" style="width:100%"></label>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+      <label style="flex:1;min-width:60px">W <input type="number" id="xf-w" style="width:100%"></label>
+      <label style="flex:1;min-width:60px">H <input type="number" id="xf-h" style="width:100%"></label>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+      <label style="flex:1;min-width:60px">Skew X <input type="number" id="xf-skewx" style="width:100%"></label>
+      <label style="flex:1;min-width:60px">Skew Y <input type="number" id="xf-skewy" style="width:100%"></label>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:6px">
+      <button class="act" id="flip-h" style="flex:1"></button>
+      <button class="act" id="flip-v" style="flex:1"></button>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:6px">
+      <button class="act" id="center-h" style="flex:1"></button>
+      <button class="act" id="center-v" style="flex:1"></button>
+    </div>
+
+    <div class="grp">Shadow (needs a layer)</div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <input type="color" id="shadow-color" value="#000000" title="shadow colour">
+      <label style="flex:1">Blur <input type="range" id="shadow-blur" min="0" max="60" value="0" style="width:70px"></label>
+    </div>
+    <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+      <label style="flex:1;min-width:60px">Offset X <input type="number" id="shadow-offx" value="0" style="width:100%"></label>
+      <label style="flex:1;min-width:60px">Offset Y <input type="number" id="shadow-offy" value="0" style="width:100%"></label>
+    </div>
+    <button class="act" id="shadow-clear" style="width:100%;margin-top:6px">Clear shadow</button>
+  </div>
 </main>
 
 <script type="module">
-import { Editor, GeminiProvider, installBridge, installDropImport, PAINT_TOOLS, selectionToPath2D }
+import { Editor, GeminiProvider, installBridge, installDropImport, selectionToPath2D, makeShape, makeText }
   from '../../packages/core/src/index.js';
 
 const ed = new Editor({ fabric: window.fabric, canvasEl: document.getElementById('cv'), width: 960, height: 640 });
 window.ed = ed;   // poke at the API from the console
+
+/* ── icons: inline SVG paths, matched glyph-for-glyph to the reference editor's icon set
+   (ditto-fe/src/components/primitives.jsx ICON_PATHS) so a tool always reads the same way
+   across both editors — only the a few canvasmith-only affordances (expand/contract/similar/
+   svg/tool-tab/layers-tab) have no reference counterpart and keep their own glyphs. ───────── */
+const ICON_PATHS = {
+  select: 'M5 3l15 9-7 1.5L9.5 20z',                                          // cursor
+  hand: 'M8 12V6.5a1.5 1.5 0 0 1 3 0V11M11 11V5.5a1.5 1.5 0 0 1 3 0V11M14 11.5V7a1.5 1.5 0 0 1 3 0v7a6 6 0 0 1-6 6h-1a6 6 0 0 1-5-3l-2-3.5a1.5 1.5 0 0 1 2.5-1.6L8 14',
+  crop: 'M6 2v16h16M2 6h16v16',
+  brush: 'M4 20c3 1 6-1 6-4 4-2 9-8 10-12l-2-2C14 3 8 8 6 12c-3 0-5 3-2 8z',
+  pencil: 'M4 20h4L19 9l-4-4L4 16v4z',
+  eraser: 'M4 14.5L11 7.5l6 6-5 5H9zM4 20.5h16M14 4.5l5.5 5.5',
+  clone: 'M8 3h8l-1.4 6h2.4l-2 6H7l-2-6h2.4zM5 18h14v3H5z',
+  heal: 'M9 3h6a2 2 0 0 1 2 2v2h2a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2h-2v2a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2h2V5a2 2 0 0 1 2-2zM12 9v6M9 12h6',
+  dodge: 'M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19',
+  burn: 'M12 3s5.5 5 5.5 9.5a5.5 5.5 0 0 1-11 0C6.5 10 9 8 9 8c0 2 1.5 3 1.5 3S12 8 12 3z',
+  sponge: 'M5 13h14v4a3 3 0 0 1-3 3H8a3 3 0 0 1-3-3zM5 13c0-5 3-8 7-8s7 3 7 8M9 17v.01M13 17v.01M16 16v.01',
+  redeye: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
+  marquee: 'M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3',
+  'marquee-ellipse': 'ellipse:12,12,9,7',
+  lasso: 'M4 12c0-4.4 3.6-7 8-7s8 2.6 8 7-3.6 7-8 7c-1.2 0-1.8 1-1.8 2a1.8 1.8 0 0 0 2.8 1.5M5.5 17.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z',
+  'lasso-poly': 'M12 3l8 6-3 9H7L4 9z',                                       // ditto's "polygon" icon, reused for the polygonal lasso tool
+  /* ditto's own toolbar reuses "wand2" for both lasso-mag and wand (they're never shown side by
+     side there — one lives in a collapsed rail flyout, seen only on hover/expand). This demo's
+     flat always-expanded Select list shows both at once, so they need visually distinct glyphs:
+     lasso-mag keeps ditto's lasso loop with small perpendicular ticks along the path (edge-snap
+     cue) instead of reusing wand2 verbatim. */
+  'lasso-mag': 'M4 12c0-4.4 3.6-7 8-7s8 2.6 8 7-3.6 7-8 7c-1.2 0-1.8 1-1.8 2a1.8 1.8 0 0 0 2.8 1.5M5.5 17.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z M4.5 9.5l1.6.6M18 8.5l1.7-.7M9.5 4.6l.4 1.7M15 19.8l-.6-1.7',
+  wand: 'M6 18L16 8M14 4l1.5 1.5M19 7l1.5-1.5M18 12l2 .5M9 3l.5 2M20 17l-1.5 1.5',          // ditto's wand2 (magic wand)
+  objectselect: 'M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8L12 3z',           // ditto's spark
+  hoverselect: 'M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',   // ditto's eye
+  expand: 'M3 8V3h5M21 8V3h-5M3 16v5h5M21 16v5h-5',
+  contract: 'M8 3v5H3M16 3v5h5M8 21v-5H3M16 21v-5h5',
+  similar: 'circle:7,7,3|circle:17,7,3|circle:7,17,3|circle:17,17,3',
+  shadow: 'rect:5,4,14,14,2 M9 22h10a2 2 0 0 0 2-2V10',
+  svg: 'm8 3 4 4 4-4M12 7v10M5 21h14',
+  rect: 'M3 8l9-5 9 5v8l-9 5-9-5V8zM3 8l9 5 9-5M12 13v8',                     // ditto's box
+  ellipse: 'ellipse:12,12,9,7',
+  line: 'M4 8h10M18 8h2M4 16h2M10 16h10M14 6v4M6 14v4',                       // ditto's sliders
+  triangle: 'M12 4l9 16H3z',
+  polygon: 'M12 3l8 6-3 9H7L4 9z',
+  star: 'M12 3l2.6 5.6L20 9.3l-4 4 1 6-5-2.8L7 19.3l1-6-4-4 5.4-.7L12 3z',
+  type: 'M4 7V5h12v2M10 5v14M7 19h6',
+  bucket: 'M5 11l6-6 7 7-6 6a2 2 0 0 1-3 0l-4-4a2 2 0 0 1 0-3zM19 16c1 1.5 1.5 2.5 1.5 3a1.5 1.5 0 0 1-3 0c0-.5.5-1.5 1.5-3z',
+  gradient: 'M4 4h16v16H4zM4 4l16 16',
+  eyedropper: 'M16 3a2.8 2.8 0 0 1 4 4l-8.5 8.5-4 1 1-4L16 3zM5 19l2 2',
+  up: 'M18 15 12 9l-6 6',                                                    // no chevron-up in ditto's set (only R/L/D) — kept as-is, used to move a layer up
+  close: 'M6 6l12 12M18 6L6 18',
+  undo: 'M9 7L4 12l5 5M4 12h11a5 5 0 0 1 0 10h-1',
+  redo: 'M15 7l5 5-5 5M20 12H9a5 5 0 0 0 0 10h1',
+  sun: 'M12 17a5 5 0 1 0 0-10 5 5 0 0 0 0 10zM12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19',
+  moon: 'M21 12.8A8.5 8.5 0 1 1 11.2 3a6.5 6.5 0 0 0 9.8 9.8z',
+  duplicate: 'M9 9h11v11H9zM5 15H4V4h11v1',                                  // ditto's copy
+  chevron: 'M15 6l-6 6 6 6',                                                 // ditto's chevronL
+  tool: 'M4 8h10M18 8h2M4 16h2M10 16h10M14 6v4M6 14v4',                      // ditto's sliders, reused as the Tool-tab glyph
+  layerstab: 'M12 3l9 5-9 5-9-5 9-5zM3 13l9 5 9-5M3 17l9 5 9-5',              // ditto's layers
+  chevronD: 'M6 9l6 6 6-6',                                                  // ditto's chevronD — stacking icons pair two of these, rotated
+  box: 'M3 8l9-5 9 5v8l-9 5-9-5V8zM3 8l9 5 9-5M12 13v8',                     // ditto's box, for Group
+  grid: 'M4 4h7v7H4zM13 4h7v7h-7zM13 13h7v7h-7zM4 13h7v7H4z',                // ditto's grid, for Ungroup
+  flip: 'M12 3v18M7 8l-4 4 4 4M17 8l4 4-4 4',                                // ditto's flip
+  move: 'M12 4v16M4 12h16M9 7l3-3 3 3M9 17l3 3 3-3M7 9l-3 3 3 3M17 9l3 3-3 3', // ditto's move, reused for Center H/V
+  contrast: 'M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM12 3v18',                  // ditto's contrast
+  droplet: 'M12 3s6 5.7 6 10a6 6 0 0 1-12 0c0-4.3 6-10 6-10z',               // ditto's droplet, for Saturation
+  blurfilter: 'M4 5h16l-6 8v5l-4 2v-7L4 5z',                                 // ditto's filter, for Blur
+  lock: 'M6 11V8a6 6 0 0 1 12 0v3M5 11h14v9H5z',                            // ditto's lock, for the per-layer lock toggle
+};
+function iconSVG(name, size = 15) {
+  const spec = ICON_PATHS[name]; if (!spec) return '';
+  const shapes = spec.split('|').map(part => {
+    if (part.startsWith('rect:')) { const [x, y, w, h, rx] = part.slice(5).split(',').map(Number); return `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${rx}"/>`; }
+    if (part.startsWith('circle:')) { const [cx, cy, r] = part.slice(7).split(',').map(Number); return `<circle cx="${cx}" cy="${cy}" r="${r}"/>`; }
+    if (part.startsWith('ellipse:')) { const [cx, cy, rx, ry] = part.slice(8).split(',').map(Number); return `<ellipse cx="${cx}" cy="${cy}" rx="${rx}" ry="${ry}"/>`; }
+    return `<path d="${part}"/>`;
+  }).join('');
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${shapes}</svg>`;
+}
+const EYE_OPEN = 'circle:12,12,3|M2 12s4-7 10-7 10 7 10 7-4 7-10 7-10-7-10-7Z';
+const EYE_OFF = 'M3 3l18 18M10.6 10.6a3 3 0 0 0 4.2 4.2M6.5 6.7C4 8.3 2 12 2 12s4 7 10 7c2 0 3.7-.6 5-1.4M9.9 5.1A10.6 10.6 0 0 1 12 5c6 0 10 7 10 7a15.3 15.3 0 0 1-2.2 3';
+ICON_PATHS.eyeOpen = EYE_OPEN; ICON_PATHS.eyeOff = EYE_OFF;
+
+/* ── theme toggle: swaps the light/dark palette via a data-mode attribute ── */
+const themeBtn = document.getElementById('theme-toggle');
+const applyMode = m => { document.documentElement.dataset.mode = m; themeBtn.innerHTML = iconSVG(m === 'dark' ? 'sun' : 'moon'); };
+applyMode(document.documentElement.dataset.mode || 'dark');
+themeBtn.onclick = () => applyMode(document.documentElement.dataset.mode === 'dark' ? 'light' : 'dark');
 
 /* ── overlay chrome: dashed selection outline + crop scrim, drawn on fabric's top context ──
    The CORE keeps selection/crop as pure state; making them visible is the shell's job — this is
@@ -77,6 +341,13 @@ const drawOverlays = () => {
     ctx.setLineDash([7 / v[0], 5 / v[0]]);
     ctx.strokeStyle = '#d4ff45'; ctx.stroke(p);
     ctx.lineDashOffset = 6 / v[0]; ctx.strokeStyle = 'rgba(0,0,0,.85)'; ctx.stroke(p);
+    ctx.setLineDash([]);
+  }
+  if (hoverPreview) {
+    const p = selectionToPath2D({ kind: 'poly', pts: hoverPreview.pts }, ed.W, ed.H);
+    ctx.lineWidth = 1.2 / v[0];
+    ctx.setLineDash([4 / v[0], 3 / v[0]]);
+    ctx.strokeStyle = 'rgba(212,255,69,.65)'; ctx.stroke(p);
     ctx.setLineDash([]);
   }
   if (ed.crop) {
@@ -97,34 +368,122 @@ const drawOverlays = () => {
   }
   ctx.restore();
 };
+let hoverPreview = null;
 ed.fc.on('after:render', drawOverlays);
 ed.on('selection', () => ed.fc.requestRenderAll());
 ed.on('crop', () => ed.fc.requestRenderAll());
+ed.on('hover', h => { hoverPreview = h; ed.fc.requestRenderAll(); });
 
-/* ── toolbar (grouped) ─────────────────────────────────────────────── */
-const GROUPS = {
-  Move: ['select', 'hand', 'crop'],
-  Paint: PAINT_TOOLS,
-  Select: ['marquee', 'marquee-ellipse', 'lasso', 'wand'],
-  Draw: ['rect', 'ellipse', 'line', 'triangle', 'polygon', 'star', 'type', 'bucket', 'gradient', 'eyedropper'],
-};
-const nav = document.getElementById('tools');
-for (const [g, tools] of Object.entries(GROUPS)) {
-  nav.insertAdjacentHTML('beforeend', `<div class="grp">${g}</div>`);
-  tools.forEach(t => nav.insertAdjacentHTML('beforeend', `<button data-tool="${t}">${t}</button>`));
-}
-nav.addEventListener('click', e => { const t = e.target.dataset.tool; if (t) ed.setTool(t); });
-ed.on('tool', t => {
-  nav.querySelectorAll('button').forEach(b => b.dataset.on = String(b.dataset.tool === t));
-  cropBtn(t === 'crop');
+/* Enter/Escape finish or cancel an in-progress polygon/magnetic lasso build — the only keyboard
+   affordance this demo adds, since the rest of the shortcut set is a host-shell decision. */
+document.addEventListener('keydown', e => {
+  if (!['lasso-poly', 'lasso-mag'].includes(ed.tool) || !ed._polyBuild) return;
+  if (e.key === 'Enter') { e.preventDefault(); ed.finishPolyLasso(); }
+  else if (e.key === 'Escape') { e.preventDefault(); ed.cancelPolyLasso(); }
 });
+
+/* ── toolbar: a collapsed icon rail, one button per group, matching the reference editor's own
+   rail (56px wide, 40x36 buttons, a corner caret + flyout for groups with 2+ tools) ──────────── */
+const TOOL_LABELS = {
+  select: 'Move / select', hand: 'Hand · pan', crop: 'Crop',
+  marquee: 'Rectangular marquee', 'marquee-ellipse': 'Elliptical marquee', lasso: 'Lasso (freehand)',
+  'lasso-poly': 'Polygonal lasso · click to add points', 'lasso-mag': 'Magnetic lasso · snaps to edges',
+  wand: 'Magic wand · click a colour region', objectselect: 'Object select', hoverselect: 'Hover select · preview on hover',
+  heal: 'Spot heal', clone: 'Clone stamp', redeye: 'Red-eye',
+  brush: 'Brush', pencil: 'Pencil', eraser: 'Eraser',
+  bucket: 'Paint bucket', gradient: 'Gradient',
+  dodge: 'Dodge · lighten', burn: 'Burn · darken', sponge: 'Sponge · saturation',
+  rect: 'Rectangle', ellipse: 'Ellipse', line: 'Line', triangle: 'Triangle', polygon: 'Polygon', star: 'Star',
+  type: 'Type', eyedropper: 'Eyedropper',
+};
+const TOOL_HINTS = {
+  select: 'Click a layer on the canvas, or drag to move the selected layer.',
+  crop: 'Drag the handles, then Apply crop in the top bar.',
+  'lasso-poly': 'Click to place points; click near the start (or press Enter) to close, Escape to cancel.',
+  'lasso-mag': 'Click to place points that snap to nearby edges; Enter closes, Escape cancels.',
+  wand: 'Click a colour region to select it. Shift-click adds, Alt-click subtracts.',
+  objectselect: 'Click an object to select it (OpenCV-assisted). Shift-click adds, Alt-click subtracts.',
+  hoverselect: 'Hover to preview what a click would select, then click to commit it.',
+};
+const TOOLGROUPS = [
+  [{ id: 'select', icon: 'select' }, { id: 'hand', icon: 'hand' }],
+  [{ id: 'marquee', icon: 'marquee' }, { id: 'marquee-ellipse', icon: 'marquee-ellipse' }, { id: 'lasso', icon: 'lasso' },
+   { id: 'lasso-poly', icon: 'lasso-poly' }, { id: 'lasso-mag', icon: 'lasso-mag' }, { id: 'wand', icon: 'wand' }],
+  [{ id: 'objectselect', icon: 'objectselect' }, { id: 'hoverselect', icon: 'hoverselect' }],
+  [{ id: 'crop', icon: 'crop' }],
+  [{ id: 'eyedropper', icon: 'eyedropper' }],
+  [{ id: 'heal', icon: 'heal' }, { id: 'clone', icon: 'clone' }, { id: 'redeye', icon: 'redeye' }],
+  [{ id: 'brush', icon: 'brush' }, { id: 'pencil', icon: 'pencil' }, { id: 'eraser', icon: 'eraser' }],
+  [{ id: 'bucket', icon: 'bucket' }, { id: 'gradient', icon: 'gradient' }],
+  [{ id: 'dodge', icon: 'dodge' }, { id: 'burn', icon: 'burn' }, { id: 'sponge', icon: 'sponge' }],
+  [{ id: 'rect', icon: 'rect' }, { id: 'ellipse', icon: 'ellipse' }, { id: 'line', icon: 'line' }, { id: 'triangle', icon: 'triangle' }, { id: 'polygon', icon: 'polygon' }, { id: 'star', icon: 'star' }],
+  [{ id: 'type', icon: 'type' }],
+];
+const nav = document.getElementById('tools');
+let flyoutGroup = -1;
+function renderRail() {
+  nav.querySelectorAll('.rail-group, .rail-bottom').forEach(n => n.remove());
+  TOOLGROUPS.forEach((tools, gi) => {
+    const activeTool = tools.find(t => t.id === ed.tool);
+    const shown = activeTool || tools[0];
+    const on = !!activeTool;
+    const wrap = document.createElement('div');
+    wrap.className = 'rail-group';
+    wrap.innerHTML = `<button class="rail-btn" data-on="${on}" data-gi="${gi}">${iconSVG(shown.icon, 18)}${tools.length > 1 ? '<span class="rail-caret"></span>' : ''}</button>`;
+    const btn = wrap.querySelector('.rail-btn');
+    btn.addEventListener('mouseenter', () => showTip(btn, TOOL_LABELS[shown.id] || shown.id));
+    btn.addEventListener('mouseleave', hideTip);
+    btn.addEventListener('click', () => {
+      hideTip();
+      if (tools.length > 1) { ed.setTool(shown.id); flyoutGroup = flyoutGroup === gi ? -1 : gi; renderRail(); }
+      else { ed.setTool(tools[0].id); flyoutGroup = -1; renderRail(); }
+    });
+    if (flyoutGroup === gi) {
+      const fly = document.createElement('div');
+      fly.className = 'rail-flyout';
+      fly.innerHTML = tools.map(t => `<div class="rail-flyout-item" data-on="${t.id === ed.tool}" data-tool="${t.id}">${iconSVG(t.icon, 15)}<span style="flex:1">${TOOL_LABELS[t.id] || t.id}</span></div>`).join('');
+      fly.addEventListener('mouseleave', () => { flyoutGroup = -1; renderRail(); });
+      fly.addEventListener('click', e => { const t = e.target.closest('[data-tool]')?.dataset.tool; if (t) { ed.setTool(t); flyoutGroup = -1; renderRail(); } });
+      wrap.appendChild(fly);
+    }
+    nav.appendChild(wrap);
+  });
+  const bottom = document.createElement('div');
+  bottom.className = 'rail-bottom';
+  bottom.innerHTML = `<button class="rail-btn" id="rail-dup" title="Duplicate (⌘D)">${iconSVG('duplicate', 17)}</button>
+    <button class="rail-btn" id="rail-del" title="Delete (⌫)">${iconSVG('close', 17)}</button>`;
+  bottom.querySelector('#rail-dup').onclick = () => { const active = ed.layers().find(l => l.active); if (active) ed.duplicateLayer(active.id); };
+  bottom.querySelector('#rail-del').onclick = () => { const active = ed.layers().find(l => l.active); if (active) ed.removeLayer(active.id); };
+  nav.appendChild(bottom);
+}
+let tipEl = null;
+function showTip(btn, text) {
+  hideTip();
+  const r = btn.getBoundingClientRect();
+  tipEl = document.createElement('div');
+  tipEl.className = 'rail-tip';
+  tipEl.textContent = text;
+  tipEl.style.left = (r.right + 8) + 'px';
+  tipEl.style.top = (r.top + r.height / 2) + 'px';
+  document.body.appendChild(tipEl);
+}
+function hideTip() { if (tipEl) { tipEl.remove(); tipEl = null; } }
+renderRail();
+ed.on('tool', t => {
+  renderRail();
+  cropBtn(t === 'crop');
+  document.getElementById('tool-icon').innerHTML = iconSVG(t);
+  document.getElementById('tool-name').textContent = t;
+  document.getElementById('tool-hint').textContent = TOOL_HINTS[t] || 'Drag on the canvas to use this tool.';
+});
+ed._emit('tool', ed.tool);   // initial paint of the Tool panel
 function cropBtn(on) {
   document.getElementById('applycrop')?.remove();
   if (on) {
     const b = document.createElement('button');
-    b.id = 'applycrop'; b.className = 'act'; b.textContent = '✓ Apply crop';
+    b.id = 'applycrop'; b.className = 'act'; b.innerHTML = '✓ Apply crop';
     b.onclick = () => ed.applyCrop();
-    nav.prepend(b);
+    document.getElementById('tool-panel').prepend(b);
   }
 }
 
@@ -133,34 +492,299 @@ size.oninput = e => ed.setToolOptions({ size: +e.target.value });
 op.oninput = e => ed.setToolOptions({ opacity: +e.target.value });
 col.oninput = e => ed.setToolOptions({ color: e.target.value, fill: e.target.value });
 ed.on('tooloptions', o => { col.value = /^#([0-9a-f]{6})$/i.test(o.color) ? o.color : col.value; });
+undo.innerHTML = iconSVG('undo'); redo.innerHTML = iconSVG('redo');
 undo.onclick = () => ed.undo(); redo.onclick = () => ed.redo();
 ed.on('history', h => { undo.disabled = h.past < 2; redo.disabled = !h.future; });
 png.onclick = () => { const a = document.createElement('a'); a.href = ed.exportPNG(); a.download = 'canvasmith.png'; a.click(); };
+svg.onclick = () => {
+  const blob = new Blob([ed.exportSVG()], { type: 'image/svg+xml' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'canvasmith.svg'; a.click();
+  URL.revokeObjectURL(url);
+};
 
-/* ── layers panel ──────────────────────────────────────────────────── */
+/* ── sidebar tabs + collapse ──────────────────────────────────────────── */
+const tabBtns = document.querySelectorAll('.tabs button');
+tabBtns[0].innerHTML = iconSVG('tool') + '<span>Tool</span>';
+tabBtns[1].innerHTML = iconSVG('layerstab') + '<span>Layers</span>';
+document.querySelector('.tabs').addEventListener('click', e => {
+  const btn = e.target.closest('button'); if (!btn) return;
+  const tab = btn.dataset.tab;
+  tabBtns.forEach(b => b.dataset.on = String(b === btn));
+  document.getElementById('tool-panel').style.display = tab === 'tool' ? '' : 'none';
+  document.getElementById('layers-panel').style.display = tab === 'layers' ? 'flex' : 'none';
+});
+const mainEl = document.querySelector('main');
+const collapseLeftBtn = document.getElementById('collapse-left');
+collapseLeftBtn.innerHTML = iconSVG('chevron', 10);
+let leftCollapsed = false;
+collapseLeftBtn.onclick = () => {
+  leftCollapsed = !leftCollapsed;
+  mainEl.dataset.leftCollapsed = String(leftCollapsed);
+  collapseLeftBtn.dataset.flip = String(leftCollapsed);
+  collapseLeftBtn.title = leftCollapsed ? 'Show Tool/Layers panel' : 'Hide Tool/Layers panel';
+};
+const collapseRightBtn = document.getElementById('collapse-right');
+collapseRightBtn.innerHTML = iconSVG('chevron', 10);
+collapseRightBtn.dataset.flip = 'true';   // points right by default (panel open, collapses rightward)
+let rightCollapsed = false;
+collapseRightBtn.onclick = () => {
+  rightCollapsed = !rightCollapsed;
+  mainEl.dataset.rightCollapsed = String(rightCollapsed);
+  collapseRightBtn.dataset.flip = String(!rightCollapsed);
+  collapseRightBtn.title = rightCollapsed ? 'Show Properties panel' : 'Hide Properties panel';
+};
+
+/* ── snap toggle, align, duplicate ────────────────────────────────────── */
+const snapBtn = document.getElementById('snap-toggle');
+snapBtn.onclick = () => {
+  const on = snapBtn.dataset.on !== 'true';
+  snapBtn.dataset.on = String(on);
+  snapBtn.textContent = on ? 'Snap: on' : 'Snap: off';
+  ed.setSnapEnabled(on);
+};
+document.querySelector('.align-grid').addEventListener('click', e => {
+  const edge = e.target.closest('button')?.dataset.edge;
+  const active = ed.layers().find(l => l.active);
+  if (edge && active) ed.alignLayer(active.id, edge);
+});
+const dupBtn = document.getElementById('duplicate');
+dupBtn.innerHTML = iconSVG('duplicate') + '<span>Duplicate</span>';
+dupBtn.onclick = () => { const active = ed.layers().find(l => l.active); if (active) ed.duplicateLayer(active.id); };
+
+/* ── selection modify: expand/contract/similar (cv-backed — report status in the note line) ── */
+const selMsg = document.getElementById('sel-msg');
+const SEL_REASON_MSG = {
+  cv_unavailable: 'Needs the OpenCV worker (no internet / blocked CDN).',
+  no_selection: 'Make a selection first.',
+  no_seed: 'Use the wand or object-select tool first, then Select similar.',
+  no_match: 'No matching region found.',
+  need_multi_selection: 'Shift-click 2+ layers on the canvas to group them.',
+  need_group: 'Select a group to ungroup.',
+};
+const showSelResult = r => { selMsg.textContent = r.status === 'ok' ? '' : (r.message || SEL_REASON_MSG[r.reason] || r.reason); };
+const expBtn = document.getElementById('sel-expand'); expBtn.innerHTML = iconSVG('expand') + '<span>Expand</span>';
+const conBtn = document.getElementById('sel-contract'); conBtn.innerHTML = iconSVG('contract') + '<span>Contract</span>';
+expBtn.onclick = async () => showSelResult(await ed.expandSelection(6));
+conBtn.onclick = async () => showSelResult(await ed.contractSelection(6));
+const simBtn = document.getElementById('sel-similar'); simBtn.innerHTML = iconSVG('similar') + '<span>Select similar</span>';
+simBtn.onclick = async () => showSelResult(await ed.selectSimilar());
+
+/* ── recolour the current selection (lightness-preserving, non-destructive) ───────────────── */
+const recolorBtn = document.getElementById('sel-recolor-btn'), recolorInput = document.getElementById('sel-recolor');
+recolorBtn.innerHTML = iconSVG('eyedropper') + '<span>Recolor selection…</span>';
+recolorBtn.onclick = () => recolorInput.click();
+recolorInput.oninput = () => { recolorInput.style.display = ''; };
+recolorInput.onchange = e => { const id = ed.recolorSelection(e.target.value); if (!id) selMsg.textContent = 'Make a selection first.'; else selMsg.textContent = ''; recolorInput.style.display = 'none'; };
+
+/* ── layer shadow ───────────────────────────────────────────────────────────────────────── */
+const shadowColor = document.getElementById('shadow-color'), shadowBlur = document.getElementById('shadow-blur');
+const shadowOffX = document.getElementById('shadow-offx'), shadowOffY = document.getElementById('shadow-offy');
+const applyShadow = () => ed.setShadow({ color: shadowColor.value, blur: +shadowBlur.value, offsetX: +shadowOffX.value, offsetY: +shadowOffY.value });
+shadowColor.oninput = applyShadow; shadowBlur.oninput = applyShadow; shadowOffX.oninput = applyShadow; shadowOffY.oninput = applyShadow;
+document.getElementById('shadow-clear').onclick = () => {
+  shadowBlur.value = 0; shadowOffX.value = 0; shadowOffY.value = 0;
+  ed.setShadow({ blur: 0, offsetX: 0, offsetY: 0 });
+};
+
+/* ── properties panel: stacking, group/ungroup, adjust, blend/opacity, transform, flip/center ──
+   Everything here acts on the active layer (ed.fc.getActiveObject() via the Editor facade), and
+   every control is a no-op (never throws) with nothing selected — same contract the rest of this
+   panel already follows. Refreshed on 'selection' and 'change' so numeric fields track drags. */
+const BLEND_MODES = [
+  ['source-over', 'Normal'], ['multiply', 'Multiply'], ['screen', 'Screen'], ['overlay', 'Overlay'],
+  ['darken', 'Darken'], ['lighten', 'Lighten'], ['color-dodge', 'Dodge'], ['color-burn', 'Burn'],
+  ['hard-light', 'Hard light'], ['soft-light', 'Soft light'], ['difference', 'Difference'],
+  ['hue', 'Hue'], ['saturation', 'Saturation'], ['color', 'Color'], ['luminosity', 'Luminosity'],
+];
+const blendSel = document.getElementById('blend-mode');
+blendSel.innerHTML = BLEND_MODES.map(([v, l]) => `<option value="${v}">${l}</option>`).join('');
+
+document.getElementById('stack-top').innerHTML = iconSVG('chevronD', 14) ;
+document.getElementById('stack-top').firstChild.style.transform = 'rotate(180deg)';
+document.getElementById('stack-bottom').innerHTML = iconSVG('chevronD', 14);
+document.getElementById('stack-up').innerHTML = iconSVG('chevronD', 15);
+document.getElementById('stack-up').firstChild.style.transform = 'rotate(180deg)';
+document.getElementById('stack-down').innerHTML = iconSVG('chevronD', 15);
+const groupBtn = document.getElementById('group-btn'), ungroupBtn = document.getElementById('ungroup-btn');
+groupBtn.innerHTML = iconSVG('box', 13) + '<span>Group</span>';
+ungroupBtn.innerHTML = iconSVG('grid', 13) + '<span>Ungroup</span>';
+const flipHBtn = document.getElementById('flip-h'), flipVBtn = document.getElementById('flip-v');
+flipHBtn.innerHTML = iconSVG('flip', 13) + '<span>Flip H</span>';
+flipVBtn.innerHTML = iconSVG('flip', 13) + '<span>Flip V</span>';
+flipVBtn.firstChild.style.transform = 'rotate(90deg)';
+const centerHBtn = document.getElementById('center-h'), centerVBtn = document.getElementById('center-v');
+centerHBtn.innerHTML = iconSVG('move', 13) + '<span>Center H</span>';
+centerVBtn.innerHTML = iconSVG('move', 13) + '<span>Center V</span>';
+
+document.getElementById('adj-brightness-row').prepend((() => { const s = document.createElement('span'); s.innerHTML = iconSVG('sun', 13); s.style.display = 'flex'; return s; })());
+document.getElementById('adj-contrast-row').prepend((() => { const s = document.createElement('span'); s.innerHTML = iconSVG('contrast', 13); s.style.display = 'flex'; return s; })());
+document.getElementById('adj-saturate-row').prepend((() => { const s = document.createElement('span'); s.innerHTML = iconSVG('droplet', 13); s.style.display = 'flex'; return s; })());
+document.getElementById('adj-blur-row').prepend((() => { const s = document.createElement('span'); s.innerHTML = iconSVG('blurfilter', 13); s.style.display = 'flex'; return s; })());
+
+document.getElementById('stack-top').onclick = () => { const a = ed.layers().find(l => l.active); if (a) ed.moveLayer(a.id, 'top'); };
+document.getElementById('stack-up').onclick = () => { const a = ed.layers().find(l => l.active); if (a) ed.moveLayer(a.id, 'up'); };
+document.getElementById('stack-down').onclick = () => { const a = ed.layers().find(l => l.active); if (a) ed.moveLayer(a.id, 'down'); };
+document.getElementById('stack-bottom').onclick = () => { const a = ed.layers().find(l => l.active); if (a) ed.moveLayer(a.id, 'bottom'); };
+groupBtn.onclick = () => showSelResult(ed.groupSelection());
+ungroupBtn.onclick = () => showSelResult(ed.ungroupSelection());
+
+const adjBrightness = document.getElementById('adj-brightness'), adjContrast = document.getElementById('adj-contrast');
+const adjSaturate = document.getElementById('adj-saturate'), adjBlur = document.getElementById('adj-blur');
+adjBrightness.oninput = () => ed.setImageFilters({ brightness: +adjBrightness.value });
+adjContrast.oninput = () => ed.setImageFilters({ contrast: +adjContrast.value });
+adjSaturate.oninput = () => ed.setImageFilters({ saturate: +adjSaturate.value });
+adjBlur.oninput = () => ed.setImageFilters({ blur: +adjBlur.value });
+
+blendSel.onchange = () => { const a = ed.layers().find(l => l.active); if (a) ed.setLayer(a.id, { blend: blendSel.value }); };
+const layerOpacity = document.getElementById('layer-opacity');
+layerOpacity.oninput = () => { const a = ed.layers().find(l => l.active); if (a) ed.setLayer(a.id, { opacity: +layerOpacity.value }); };
+
+const xfAngle = document.getElementById('xf-angle'), xfX = document.getElementById('xf-x'), xfY = document.getElementById('xf-y');
+const xfW = document.getElementById('xf-w'), xfH = document.getElementById('xf-h'), xfSkewX = document.getElementById('xf-skewx'), xfSkewY = document.getElementById('xf-skewy');
+xfAngle.oninput = () => ed.setNumeric({ angle: +xfAngle.value });
+xfX.onchange = () => ed.setNumeric({ x: +xfX.value });
+xfY.onchange = () => ed.setNumeric({ y: +xfY.value });
+xfW.onchange = () => ed.setNumeric({ w: +xfW.value });
+xfH.onchange = () => ed.setNumeric({ h: +xfH.value });
+xfSkewX.onchange = () => ed.setNumeric({ skewX: +xfSkewX.value });
+xfSkewY.onchange = () => ed.setNumeric({ skewY: +xfSkewY.value });
+flipHBtn.onclick = () => ed.flipLayer('x');
+flipVBtn.onclick = () => ed.flipLayer('y');
+centerHBtn.onclick = () => { const a = ed.layers().find(l => l.active); if (a) ed.alignLayer(a.id, 'center'); };
+centerVBtn.onclick = () => { const a = ed.layers().find(l => l.active); if (a) ed.alignLayer(a.id, 'middle'); };
+
+/* Refresh every field from the current active object. Runs on 'selection' and 'change' (the
+   latter also fires after drags/transforms commit, keeping X/Y/W/H/angle live). */
+function refreshPropsPanel() {
+  const o = ed.fc.getActiveObject();
+  document.getElementById('props-title').textContent = o
+    ? (o.type === 'activeSelection' ? (o._objects ? o._objects.length + ' layers' : 'Selection') : (ed.layers().find(l => l.active)?.name || o.type || 'Layer'))
+    : 'Properties';
+  const isImage = !!o && o.type === 'image';
+  document.getElementById('adjust-section').style.display = isImage ? '' : 'none';
+  if (isImage) {
+    const fx = ed.getImageFilters();
+    adjBrightness.value = fx.brightness; adjContrast.value = fx.contrast;
+    adjSaturate.value = fx.saturate; adjBlur.value = fx.blur;
+  }
+  blendSel.value = o ? (o.globalCompositeOperation || 'source-over') : 'source-over';
+  layerOpacity.value = o && o.opacity != null ? o.opacity : 1;
+  blendSel.disabled = layerOpacity.disabled = !o;
+  xfAngle.value = o ? Math.round(o.angle || 0) : 0;
+  xfX.value = o ? Math.round(o.left || 0) : '';
+  xfY.value = o ? Math.round(o.top || 0) : '';
+  xfW.value = o ? Math.round(o.getScaledWidth ? o.getScaledWidth() : (o.width || 0)) : '';
+  xfH.value = o ? Math.round(o.getScaledHeight ? o.getScaledHeight() : (o.height || 0)) : '';
+  xfSkewX.value = o ? Math.round(o.skewX || 0) : 0;
+  xfSkewY.value = o ? Math.round(o.skewY || 0) : 0;
+  [xfAngle, xfX, xfY, xfW, xfH, xfSkewX, xfSkewY, flipHBtn, flipVBtn, centerHBtn, centerVBtn].forEach(el => el.disabled = !o);
+  shadowColor.value = (o && o.shadow && o.shadow.color) || '#000000';
+  shadowBlur.value = (o && o.shadow && o.shadow.blur) || 0;
+  shadowOffX.value = (o && o.shadow && o.shadow.offsetX) || 0;
+  shadowOffY.value = (o && o.shadow && o.shadow.offsetY) || 0;
+  [shadowColor, shadowBlur, shadowOffX, shadowOffY].forEach(el => el.disabled = !o);
+  groupBtn.disabled = !(o && o.type === 'activeSelection');
+  ungroupBtn.disabled = !(o && o.type === 'group');
+  [document.getElementById('stack-top'), document.getElementById('stack-up'), document.getElementById('stack-down'), document.getElementById('stack-bottom')].forEach(el => el.disabled = !o);
+}
+ed.on('change', refreshPropsPanel);
+ed.fc.on('selection:created', refreshPropsPanel);
+ed.fc.on('selection:updated', refreshPropsPanel);
+ed.fc.on('selection:cleared', refreshPropsPanel);
+ed.fc.on('object:moving', refreshPropsPanel);
+ed.fc.on('object:scaling', refreshPropsPanel);
+ed.fc.on('object:rotating', refreshPropsPanel);
+refreshPropsPanel();
+
+/* ── layers panel: thumbnail + name/subtitle rows with hover-reveal actions ─────────────────
+   Matches the reference editor's layer list. Thumbnails are generated on demand from the fabric
+   object itself (toDataURL at a small multiplier, cached per layer + invalidated on scene change)
+   since the headless Editor's layers() API is intentionally thumbnail-free — that's DOM/canvas
+   rendering work, a host concern, not something the library should do unasked. */
 const panel = document.getElementById('layers');
+const _thumbCache = new Map();   // id -> {ver, url}
+let _thumbVer = 0;
+function layerThumb(id) {
+  const o = ed.fc.getObjects().find(x => x.id === id);
+  if (!o || !o.toDataURL) return null;
+  const cached = _thumbCache.get(id);
+  if (cached && cached.ver === _thumbVer) return cached.url;
+  try {
+    const br = o.getBoundingRect ? o.getBoundingRect(true) : null;
+    const dim = br ? Math.max(br.width || 1, br.height || 1) : 1;
+    const mult = Math.max(0.03, Math.min(1, 56 / dim));
+    const url = o.toDataURL({ format: 'png', multiplier: mult, enableRetinaScaling: false });
+    _thumbCache.set(id, { ver: _thumbVer, url });
+    return url;
+  } catch (e) { return null; }
+}
+function layerSubtitle(l) {
+  const o = ed.fc.getObjects().find(x => x.id === l.id);
+  if (!o) return l.role;
+  const w = Math.round(o.getScaledWidth ? o.getScaledWidth() : (o.width || 0));
+  const h = Math.round(o.getScaledHeight ? o.getScaledHeight() : (o.height || 0));
+  return w && h ? `${w}×${h} ${l.role}` : l.role;
+}
 const renderLayers = () => {
-  panel.innerHTML = ed.layers().map(l =>
-    `<div class="layer" data-id="${l.id}" data-on="${l.active}">
-       <span data-act="vis">${l.visible ? '👁' : '—'}</span>
-       <span class="nm" style="opacity:${l.visible ? 1 : .4}">${l.name}</span>
-       <span data-act="up">↑</span><span data-act="del">✕</span></div>`).join('');
+  _thumbVer++;
+  panel.innerHTML = ed.layers().map(l => {
+    const thumb = layerThumb(l.id);
+    return `<div class="layer" data-id="${l.id}" data-on="${l.active}" data-visible="${l.visible}">
+       <div class="layer-thumb">${thumb ? `<img src="${thumb}" alt="">` : iconSVG(l.role === 'text' ? 'type' : l.role === 'bg' ? 'image' : 'box', 14)}</div>
+       <div class="layer-meta"><span class="nm">${l.name}</span><span class="sub">${layerSubtitle(l)}</span></div>
+       <div class="layer-actions">
+         <button data-act="up" title="Move up">${iconSVG('up', 12)}</button>
+         <button data-act="lock" title="${l.locked ? 'Unlock' : 'Lock'}" data-active="${l.locked}">${iconSVG('lock', 12)}</button>
+         <button data-act="vis" title="${l.visible ? 'Hide' : 'Show'}" data-active="${!l.visible}">${iconSVG(l.visible ? 'eyeOpen' : 'eyeOff', 12)}</button>
+         ${l.role !== 'bg' ? `<button data-act="del" title="Delete">${iconSVG('close', 12)}</button>` : ''}
+       </div></div>`;
+  }).join('');
 };
 panel.addEventListener('click', e => {
   const row = e.target.closest('.layer'); if (!row) return;
-  const id = row.dataset.id, act = e.target.dataset.act;
-  if (act === 'vis') ed.setLayer(id, { visible: panel.querySelector(`[data-id="${id}"] span`).textContent === '—' });
+  const id = row.dataset.id, act = e.target.closest('[data-act]')?.dataset.act;
+  const l = ed.layers().find(l => l.id === id);
+  if (act === 'vis') ed.setLayer(id, { visible: !l.visible });
+  else if (act === 'lock') ed.setLayer(id, { locked: !l.locked });
   else if (act === 'up') ed.moveLayer(id, 'up');
   else if (act === 'del') ed.removeLayer(id);
-  else ed.activate(id);
+  else if (!act) ed.activate(id);
 });
 ed.on('change', renderLayers); renderLayers();
 
+/* ── add element: quick-insert chips, centered on the artboard (ditto's own addElement) ────── */
+document.getElementById('add-text').innerHTML = iconSVG('type', 12) + '<span>Text</span>';
+document.getElementById('add-box').innerHTML = iconSVG('rect', 12) + '<span>Box</span>';
+document.getElementById('add-circle').innerHTML = iconSVG('hoverselect', 12) + '<span>Circle</span>';
+document.getElementById('add-image').innerHTML = iconSVG('image', 12) + '<span>Image</span>';
+document.getElementById('add-paint').innerHTML = iconSVG('layerstab', 12) + '<span>Paint Layer</span>';
+const centerPt = () => ({ x: ed.W / 2, y: ed.H / 2 });
+document.getElementById('add-text').onclick = () => {
+  const t = makeText(ed.fabric, centerPt(), { fontSize: 48 });
+  ed.fc.add(t); ed.fc.setActiveObject(t); ed.commit('text'); ed.setTool('select');
+};
+document.getElementById('add-box').onclick = () => {
+  const o = makeShape(ed.fabric, 'rect', centerPt(), ed.toolOpts);
+  if (o) { ed.fc.add(o); ed.fc.setActiveObject(o); ed.commit('shape'); ed.setTool('select'); }
+};
+document.getElementById('add-circle').onclick = () => {
+  const o = makeShape(ed.fabric, 'ellipse', centerPt(), ed.toolOpts);
+  if (o) { ed.fc.add(o); ed.fc.setActiveObject(o); ed.commit('shape'); ed.setTool('select'); }
+};
+document.getElementById('add-image').onclick = () => file.click();
+document.getElementById('add-paint').onclick = () => ed.setTool('brush');
+
 /* ── open: file picker, drag/drop+paste, and the cross-platform bridge ── */
 openfile.onclick = () => file.click();
-file.onchange = () => { const f = file.files[0]; if (!f) return; const r = new FileReader(); r.onload = () => ed.openImage(r.result); r.readAsDataURL(f); };
+/* Every image entry point adds a layer that fits inside the CURRENT artboard — the artboard size
+   never changes underneath you. This matches the reference editor: the canvas is a fixed ad
+   format, not something a dropped-in photo gets to resize. (Editor#openImage's fit-artboard
+   behavior still exists in core for hosts that want "start a document from this photo"; this demo
+   just doesn't use it as the default add-image path.) */
+file.onchange = () => { const f = file.files[0]; if (!f) return; const r = new FileReader(); r.onload = () => ed.addImage(r.result); r.readAsDataURL(f); };
 installDropImport(document.getElementById('stage'), src => ed.addImage(src));
-installBridge(src => ed.openImage(src));   // ?image= / #img= / postMessage / localStorage handoff
+installBridge(src => ed.addImage(src));   // ?image= / #img= / postMessage / localStorage handoff
 
 /* ── AI box: free Gemini key flow ──────────────────────────────────── */
 const gem = new GeminiProvider();
@@ -177,12 +801,35 @@ const renderAI = () => {
     });
   } else {
     aibox.innerHTML = `<input id="gp" placeholder="e.g. make the sky sunset"><button class="act" id="grun">✦ Apply AI edit</button>
-      <button class="act" id="gkey2" style="font-size:11px">change key</button><div class="note" id="gmsg"></div>`;
+      <input id="gbg" placeholder="e.g. marble table, warm light" style="margin-top:6px"><button class="act" id="gbgrun">✦ Replace background</button>
+      <input id="gins" placeholder="e.g. a small red balloon" style="margin-top:6px"><button class="act" id="ginsrun">✦ Generate <span id="ginslabel">here</span></button>
+      <button class="act" id="gregions" style="margin-top:6px">✦ Detect regions → layers</button>
+      <button class="act" id="gkey2" style="font-size:11px;margin-top:6px">change key</button><div class="note" id="gmsg"></div>`;
+    const msg = aibox.querySelector('#gmsg');
+    aibox.querySelector('#ginslabel').textContent = ed.selection ? 'in selection' : 'here';
+    ed.on('selection', () => { const l = aibox.querySelector('#ginslabel'); if (l) l.textContent = ed.selection ? 'in selection' : 'here'; });
     aibox.querySelector('#grun').onclick = async () => {
       const p = aibox.querySelector('#gp').value.trim(); if (!p) return;
-      aibox.querySelector('#gmsg').textContent = 'Working…';
+      msg.textContent = 'Working…';
       const r = await ed.aiEdit(p);
-      aibox.querySelector('#gmsg').textContent = r.status === 'ok' ? 'Applied ✓ (undo to revert)' : (r.message || r.reason);
+      msg.textContent = r.status === 'ok' ? 'Applied ✓ (undo to revert)' : (r.message || r.reason);
+    };
+    aibox.querySelector('#gbgrun').onclick = async () => {
+      const p = aibox.querySelector('#gbg').value.trim(); if (!p) return;
+      msg.textContent = 'Replacing background…';
+      const r = await ed.aiBgSwap(p);
+      msg.textContent = r.status === 'ok' ? 'Applied ✓ (undo to revert)' : (r.message || r.reason);
+    };
+    aibox.querySelector('#ginsrun').onclick = async () => {
+      const p = aibox.querySelector('#gins').value.trim(); if (!p) return;
+      msg.textContent = 'Generating…';
+      const r = await ed.aiInsertAt(p, { x: ed.W / 2, y: ed.H / 2 });
+      msg.textContent = r.status === 'ok' ? 'Inserted ✓ (undo to revert)' : (r.message || r.reason);
+    };
+    aibox.querySelector('#gregions').onclick = async () => {
+      msg.textContent = 'Detecting regions…';
+      const r = await ed.detectRegionsToLayers();
+      msg.textContent = r.status === 'ok' ? `Split into ${r.result} layers ✓ (undo to revert)` : (r.message || r.reason);
     };
     aibox.querySelector('#gkey2').onclick = () => { gem.setKey(null); renderAI(); };
   }

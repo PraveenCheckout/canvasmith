@@ -7,11 +7,18 @@ export { History } from './history.js';
 export {
   startSelection, updateSelection, finalizeSelection,
   selectionToPath2D, selectionFillRule, floodSelectPolygon, wandSelect,
+  startPolyBuild, polyBuildAdd, polyBuildPreview, finishPolyBuild,
+  buildEdgeMapFromImageData, snapToEdge,
+  selectionPolys, polysToSelection, addPolyToSelection, selectionBounds, HoverCache,
 } from './selection.js';
 export { makeShape, makeText, layerLabel, starPoints, uid } from './shapes.js';
 export { getCropHandle, dragCropRect, applyCrop } from './crop.js';
-export { EXTRA, serialize, restore, exportImage, addImageLayer, artboardForImage } from './io.js';
+export { alignDelta, snapDelta } from './layout.js';
+export { EXTRA, serialize, restore, exportImage, addImageLayer, artboardForImage, loadImageEl } from './io.js';
+export { selectionClipObject, renderSelectedPixels } from './pixels.js';
 export { AIRegistry, CAPABILITIES } from './ai/registry.js';
 export { GeminiProvider } from './ai/gemini.js';
 export { installBridge, openInEditor, installDropImport, parseLaunch, BRIDGE } from './bridge.js';
-export { hexRgb, rgba, toHex, relLum } from './color.js';
+export { hexRgb, rgba, toHex, relLum, rgbToHsl, hslToRgb, hexToHsl, recolorPixels, fxToFilterSpecs, FX_DEFAULTS } from './color.js';
+export { CvEngine, prepImageData } from './cv/client.js';
+export { cvWorkerBody, cvWorkerSource, DEFAULT_OPENCV_URL } from './cv/worker.js';
